@@ -2,7 +2,7 @@
 # Python >= 3.12 required
 
 # Core framework - 1.224.0 includes reconciliation loop fix, trailing stop LAST_PRICE fix, algo order fixes
-nautilus_trader==1.224.0
+nautilus_trader==1.225.0
 
 # AI and API clients
 openai>=1.0.0
