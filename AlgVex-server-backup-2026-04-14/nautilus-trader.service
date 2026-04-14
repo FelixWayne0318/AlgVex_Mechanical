@@ -1,0 +1,42 @@
+[Unit]
+Description=Nautilus AlgVex Bot
+After=network.target
+
+[Service]
+Type=simple
+User=linuxuser
+WorkingDirectory=/home/linuxuser/nautilus_AlgVex
+Environment="PATH=/home/linuxuser/nautilus_AlgVex/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="AUTO_CONFIRM=true"
+# v6.3: Rust PANIC 完整回溯 + PyO3 线程调试
+Environment="RUST_BACKTRACE=1"
+Environment="RUST_LOG=warn"
+EnvironmentFile=-/home/linuxuser/nautilus_AlgVex/.env
+
+# 启动前清理同策略进程，不影响 SRP 服务
+# 注意: 只杀 "--strategy ai"，不能用 "--env" (会误杀 SRP)
+ExecStartPre=-/usr/bin/pkill -f "main_live.py --strategy ai"
+ExecStartPre=/bin/sleep 2
+
+ExecStart=/home/linuxuser/nautilus_AlgVex/venv/bin/python3 main_live.py --strategy ai --env production
+
+# Graceful shutdown: send SIGTERM, wait 30s for Telegram notification + cleanup
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# v6.3: SIGTERM 退出码 143 (128+15) 视为正常关机, 不触发重启
+# v6.4: PyO3 shutdown PANIC 在 TimeoutStopSec=30 的等待窗口内完成清理后退出码仍为 143
+# 注意: 不再添加 SIGABRT (134) — 将 SIGABRT 标记为 success 会导致真正的运行时崩溃
+# (非 shutdown 触发的 abort) 也不触发 Restart=on-failure 自动重启，造成裸仓风险。
+SuccessExitStatus=143
+
+# Auto-restart on failure
+Restart=on-failure
+RestartSec=10
+
+# Logging (use journalctl to view)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

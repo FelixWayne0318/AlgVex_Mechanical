@@ -1,0 +1,62 @@
+# SRP Strategy Configuration — v6.1
+# SSoT: srp/docs/v6.pine
+# =============================================================================
+
+version: "6.1"
+
+# --- Instrument ---
+instrument_id: "BTCUSDT-PERP.BINANCE"
+bar_type: "BTCUSDT-PERP.BINANCE-30-MINUTE-LAST-EXTERNAL"
+timeframe: "30m"
+
+# --- SRP Signal (Pine: SRP 信号 group) ---
+src_type: "HLC3"                    # "Close" | "HLC3" | "OHLC4" | "HL2"
+vwma_length: 14                     # Pine: VWMA 周期
+srp_pct: 1.0                        # Pine: SRP 通道 %
+rsi_period: 7                       # Pine: RSI 周期 (Wilder's, always uses close)
+mfi_period: 7                       # Pine: MFI 周期 (uses src_type)
+rsi_mfi_below: 55.0                 # Pine: 做多 RSI-MFI <
+rsi_mfi_above: 95.0                 # Pine: 做空 RSI-MFI >  (v6.1: 95, v5: 100)
+
+# --- Position Sizing (Pine: 策略设置 group) ---
+base_order_pct: 10.0                # Pine: 基础仓位 % (equity × this / 100)
+mintp: 0.025                        # Pine: 止盈 % (2.5%)
+mintp_protection: true              # Pine: 最低止盈保护
+
+# --- DCA (Pine: DCA 加仓 group) ---
+max_dca_count: 4                    # Pine: DCA 次数 (pyramiding = max_dca_count + 1)
+dca_multiplier: 1.5                 # Pine: DCA 倍数
+dca_min_change_pct: 3.0             # Pine: DCA 间距 %
+dca_type: "volume_multiply"         # "volume_multiply" | "base_multiply"
+
+# --- Virtual DCA (Pine: 虚拟 DCA group) ---
+vdca_enabled: true                  # Pine: 启用虚拟 DCA
+vdca_max: 10                        # Pine: 虚拟最大次数 (maxval=20, float safe)
+
+# --- Risk (Pine: 风控 group) ---
+max_loss_pct: 0.06                  # Pine: 硬止损 % (6%)
+
+# --- Cycle (Pine: 周期设置 group) ---
+# BTC halving cycle: bear = [top, bottom), bull = else
+# Python reads this table; Pine has hardcoded dates + input for cycle 4
+cycle_enabled: true
+cycle_dates:
+  - { top: "2013-11-30", bottom: "2015-01-14" }   # Cycle 1
+  - { top: "2017-12-17", bottom: "2018-12-15" }   # Cycle 2
+  - { top: "2021-11-10", bottom: "2022-11-21" }   # Cycle 3
+  - { top: "2025-10-06", bottom: "2026-10-06" }   # Cycle 4 (estimated)
+
+# --- Execution ---
+timer_interval_sec: 1200            # Heartbeat interval (20 min)
+commission_pct: 0.075               # Round-trip commission estimate (per side)
+
+# --- Telegram ---
+enable_telegram: false
+# telegram_bot_token and telegram_chat_id from ~/.env.algvex:
+#   SRP_TELEGRAM_BOT_TOKEN
+#   SRP_TELEGRAM_CHAT_ID
+
+# --- Binance API ---
+# Keys from ~/.env.algvex:
+#   SRP_BINANCE_API_KEY
+#   SRP_BINANCE_API_SECRET

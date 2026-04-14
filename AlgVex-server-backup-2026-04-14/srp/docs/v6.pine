@@ -1,0 +1,767 @@
+// SRP 策略 v6.1 — 虚拟 DCA + 周期双向交易 + 安全网
+// 基于 Felix 原版，增强项:
+//   1. 虚拟 DCA: 真实加仓用完后，虚拟加仓降低止盈目标
+//   2. 周期方向: BTC 4 年减半周期，牛市做多、熊市做空
+//   3. 安全网: 硬止损，亏损超限强制平仓
+//   4. 结构化 Alert (JSON): Webhook / App 可直接消费
+//   5. 完整统计面板: 最大回撤 / 平仓分布 / 平均持仓 / 连续亏损
+//
+// v6.1 changelog (bug fixes + full audit):
+//   Round 1 — BUG 修复:
+//   - [FIX-1] pyramiding 5→11，与 DCA 次数 maxval=10 匹配
+//   - [FIX-2] v_count 仅统计虚拟 DCA，不再被真实 DCA 累加
+//   - [FIX-3] plotshape 入场标记加入 last_exit_bar 防重复
+//   Round 2 — 35 项审计:
+//   - [FIX-B4] vdca_max maxval 50→20，防止 2.5^50 浮点精度丧失
+//   - [FIX-B5] _calc_required_capital() 区分 DCA 模式 (仓位倍增 vs 基础倍增)
+//   - [FIX-D3] sonum>1 → sonum>=1，DCA次数=0 时虚拟 DCA 仍可工作
+//   - [FIX-F4] JSON alert 补充 pos_size/avg_price/pnl 字段
+//   Round 3 — 迁移加固:
+//   - [FIX-B3] calcChangeFromLastDeal 标注双基准设计 + 迁移精确公式
+//   - [FIX-E2] show_v_avg 加 0.1% 容差带防止浮点闪烁
+//   - [FIX-F1] _json_safe() 防止 detail 字段破坏 JSON 结构
+//   - [FIX-F5] closedtrades 最终结算 PnL 导出至 Data Window + alert
+//   - [FIX-G1] 状态重置集中为 _do_exit_reset flag 模式
+//   - [FIX-G2] 魔法数字提取为命名常量
+//   - [DOC-1] rsi_mfi 公式加注释说明运算符优先级
+//   - [DOC-2] RSI 使用 close 是 TA 标准做法，非 bug
+//
+// 周期日期 (自动切换):
+//   熊市 [顶部, 底部): 周期1 2013-11-30~2015-01-14, 周期2 2017-12-17~2018-12-15,
+//   周期3 2021-11-10~2022-11-21, 周期4 可配置 (默认 2025-10-06~2026-10-06)
+//
+// 默认参数:
+//   SRP%=1.0, DCA 间距=3%, 止盈=2.5%, 止损=6%, DCA 倍数=1.5, 最大 DCA=4
+//   基础仓位 = 净值的 10% (复利)
+
+//@version=5
+strategy("SRP v6.1 [AlgVex]",
+   overlay=true,
+   max_labels_count = 500,
+   pyramiding = 11,                // [FIX-1] 匹配 DCA 次数 maxval=10 + 1 首笔入场
+   default_qty_type = strategy.cash,
+   initial_capital = 1500,
+   commission_type = strategy.commission.percent,
+   commission_value = 0.075,
+   default_qty_value = 100,
+   margin_long = 10,
+   margin_short = 10
+   )
+
+// ============================================================================
+// 输入 tab — 策略逻辑参数 (信号 / 仓位 / 风控 / 周期 / 显示)
+// ============================================================================
+// 注意: 资金参数 (本金 / 手续费 / 杠杆) → 属性 tab (strategy 声明自动生成)
+//       颜色 / 线宽 → 样式 tab (plot / fill / bgcolor 自动生成，不在此重复)
+
+// ── 📊 SRP 信号 ──────────────────────────────────────────
+string g_srp = "━━  📊 SRP 信号  ━━━━━━━━━━━━━━━"
+string src_type         = input.string("HLC3", "数据源",         group=g_srp, inline="srp0", options=["Close", "HLC3", "OHLC4", "HL2"], tooltip="VWMA 和 MFI 的价格数据源。RSI 始终使用 Close (技术分析标准做法)。")
+float  src              = src_type == "Close" ? close : src_type == "OHLC4" ? ohlc4 : src_type == "HL2" ? hl2 : hlc3
+float  ChangePercentage = input.float(1.0,   "SRP 通道 %",     group=g_srp, step=0.1, inline="srp1", tooltip="VWMA 上下通道宽度百分比", minval=0.1, maxval=10.0)
+int    Length            = input.int(14,      "VWMA 周期",      group=g_srp, inline="srp1", tooltip="VWMA 计算周期", minval=2, maxval=100)
+int    rsi_len           = input.int(7,       "RSI 周期",       group=g_srp, inline="srp2", tooltip="RSI 计算周期 (原版默认 7)", minval=2, maxval=50)
+int    mfi_len           = input.int(7,       "MFI 周期",       group=g_srp, inline="srp2", tooltip="MFI 计算周期 (原版默认 7)", minval=2, maxval=50)
+float  below            = input.float(55,    "做多 RSI-MFI <",  group=g_srp, inline="srp3", tooltip="做多条件: RSI-MFI 低于此值", minval=1, maxval=100)
+float  above            = input.float(95,    "做空 RSI-MFI >",  group=g_srp, inline="srp3", tooltip="做空条件: RSI-MFI 高于此值 (注意: RSI-MFI 范围 0~150)", minval=1, maxval=200)
+
+// ── ⚙️ 策略设置 ──────────────────────────────────────────
+string g_strat = "━━  ⚙️ 策略设置  ━━━━━━━━━━━━━━"
+float  base_pct         = input.float(10,    "基础仓位 %",      group=g_strat, step=1,   inline="st1", tooltip="每次新开仓占当前净值的百分比 (复利)", minval=1, maxval=100) / 100
+float  mintp            = input.float(2.5,   "止盈 %",          group=g_strat, step=0.1, inline="st1", tooltip="基于虚拟均价的止盈目标百分比", minval=0.1, maxval=50.0) / 100
+bool   mintpbool        = input.bool(true,   "最低止盈保护",    group=g_strat, inline="st2", tooltip="开启: 触轨平仓需盈利。关闭: 反向信号直接平仓。")
+
+// ── 📈 DCA 加仓 ──────────────────────────────────────────
+string g_dca = "━━  📈 DCA 加仓  ━━━━━━━━━━━━━━"
+int    sonum            = input.int(4,       "DCA 次数",        group=g_dca, step=1,   inline="dca1", tooltip="最大实际加仓次数 (策略 pyramiding 上限为 10)", minval=0, maxval=10) + 1
+float  safety           = input.float(1.5,   "DCA 倍数",        group=g_dca, step=0.1, inline="dca1", tooltip="每次加仓的仓位乘数", minval=1.0, maxval=10.0)
+float  minSOchange      = input.float(3.0,   "DCA 间距 %",      group=g_dca, step=0.1, inline="dca2", tooltip="价格需变动此百分比才触发下次加仓", minval=0.5, maxval=20.0)
+bool   DCATYPE          = input.string("仓位倍增", "DCA 模式",   group=g_dca, inline="dca2", options=["仓位倍增", "基础倍增"], tooltip="仓位倍增: 持仓量 × 倍数 | 基础倍增: 基础仓位 × 倍数^次数") == "仓位倍增"
+
+// ── 🔮 虚拟 DCA ──────────────────────────────────────────
+string g_vdca = "━━  🔮 虚拟 DCA  ━━━━━━━━━━━━━━"
+bool   vdca_enabled     = input.bool(true,   "启用虚拟 DCA",    group=g_vdca, tooltip="真实 DCA 用完后，虚拟加仓降低止盈目标")
+int    vdca_max         = input.int(10,      "虚拟最大次数",    group=g_vdca, step=1, minval=1, maxval=20, tooltip="虚拟加仓上限 (maxval=20，超过 20 次浮点精度不可靠)")
+
+// ── 🛡️ 风控 ──────────────────────────────────────────────
+string g_safe = "━━  🛡️ 风控  ━━━━━━━━━━━━━━━━━"
+float  max_loss_pct     = input.float(6.0,   "硬止损 %",        group=g_safe, step=0.5, tooltip="亏损超过此百分比强制平仓", minval=1.0, maxval=50.0) / 100
+
+// ── 🔄 周期设置 ──────────────────────────────────────────
+string g_cycle = "━━  🔄 周期设置  ━━━━━━━━━━━━━━"
+bool   cycle_enabled    = input.bool(true,   "启用周期切换",    group=g_cycle, tooltip="关闭则始终做多，不切换做空")
+int    top_time         = input.time(defval=timestamp('06 Oct 2025 00:00 +0000'), title='第四周期顶部',     group=g_cycle, tooltip="切换做空时间。历史周期 (1-3) 已内置。")
+int    bottom_time      = input.time(defval=timestamp('06 Oct 2026 00:00 +0000'), title='第四周期底部(预估)', group=g_cycle, tooltip="切换做多时间")
+
+// ── 📅 回测日期 ──────────────────────────────────────────
+string g_date = "━━  📅 回测日期  ━━━━━━━━━━━━━━"
+bool   limit_date_range = input.bool(true,   "限定范围",        group=g_date, inline="dt")
+int    start_time       = input.time(defval=timestamp('01 Jan 2020 00:00 +0000'), title='开始时间', group=g_date)
+int    end_time         = input.time(defval=timestamp('31 Dec 2080 00:00 +0000'), title='结束时间', group=g_date)
+
+// ── 🎨 显示 ──────────────────────────────────────────────
+string g_vis = "━━  🎨 显示  ━━━━━━━━━━━━━━━━━"
+bool   show_channel     = input.bool(true,   "SRP 通道",       group=g_vis, inline="v1", tooltip="显示 VWMA 上下轨及通道填充")
+bool   showdeals        = input.bool(true,   "持仓线",         group=g_vis, inline="v1", tooltip="显示均价/止盈/止损/加仓线")
+bool   showpnllabel     = input.bool(true,   "盈亏标签",       group=g_vis, inline="v2", tooltip="平仓时显示盈亏详情标签")
+bool   show_markers     = input.bool(true,   "入场/出场标记",  group=g_vis, inline="v2", tooltip="显示开仓/加仓/平仓图形标记")
+bool   show_bg          = input.bool(true,   "持仓背景色",     group=g_vis, inline="v3", tooltip="持仓时显示背景色 (做多青/做空红)")
+bool   show_table       = input.bool(true,   "信息面板",       group=g_vis, inline="v3")
+string tbl_position     = input.string("Top Right", "📍 面板位置", options=["Top Right","Top Left","Top Center","Bottom Right","Bottom Left","Bottom Center","Middle Right","Middle Left"], group=g_vis)
+string tbl_size_str     = input.string("小", "面板字体",        group=g_vis, inline="v4", options=["小", "中", "大"], tooltip="信息面板字体大小")
+string lbl_size_str     = input.string("小", "标签字体",        group=g_vis, inline="v4", options=["小", "中", "大"], tooltip="盈亏标签字体大小")
+
+// ── 🔔 提醒 ──────────────────────────────────────────────
+string g_alert = "━━  🔔 提醒  ━━━━━━━━━━━━━━━━━"
+bool   alert_enabled    = input.bool(true,   "启用 Alert",     group=g_alert, tooltip="总开关: 关闭后不发送任何 TradingView Alert")
+
+// ── 字体大小映射 ──
+string tbl_sz = tbl_size_str == "大" ? size.large : tbl_size_str == "中" ? size.normal : size.small
+string lbl_sz = lbl_size_str == "大" ? size.large : lbl_size_str == "中" ? size.normal : size.small
+
+// ============================================================================
+// 配色方案 — 与 AlgVex 网站前端统一
+// ============================================================================
+// 映射: --primary(青) / --accent(紫) / --profit(绿) / --loss(红) / --warning(金)
+color C_ENTRY       = #00D9D9   // --primary  HSL(173,80%,50%)  — 入场信号 / 做多
+color C_PROFIT      = #00C878   // --profit   HSL(160,84%,39%)  — 盈利 / 止盈
+color C_BEAR        = #FF3B30   // --loss     HSL(0,72%,51%)    — 做空 / 亏损 / 止损
+color C_ACCENT      = #BB86FC   // --accent   HSL(263,70%,60%)  — 虚拟 DCA / 特殊
+color C_GOLD        = #FFB800   // --warning  HSL(38,92%,50%)   — 标签 / 高亮 / 触轨
+color C_SOFT_WHITE  = #E8EAF0   // --foreground 近似             — 数值文字
+color C_SLATE       = #1B2136   // --border   HSL(217,33%,17%)  — 边框
+color C_CHARCOAL    = #0C0F1A   // --background HSL(222,47%,5%) — 表格数值背景
+color C_DARK_BG     = #111724   // --card     HSL(222,47%,7%)   — 表格标签背景
+color C_LAVENDER    = #BB86FC   // --accent                     — 周期切换 (同 accent)
+color C_CHANNEL_UP  = #FF3B30   // --loss     上轨 = 压力 = 红
+color C_CHANNEL_DN  = #00D9D9   // --primary  下轨 = 支撑 = 青
+color C_CHANNEL_MID = #3D4A5C   // --muted    HSL(217,33%,15%)  — VWMA 中线
+color C_DCA_SHORT   = #FFB800   // --warning  做空加仓 = 琥珀
+
+// ============================================================================
+// [FIX-G2] 命名常量 — 消除魔法数字
+// ============================================================================
+float LBL_Y_OFFSET  = 0.04     // PnL 标签 Y 轴偏移 (high 的 4%)
+float V_AVG_DISPLAY_TOL = 0.001 // [FIX-E2] 虚拟均价显示容差 (0.1%，防浮点闪烁)
+int   MS_PER_SEC    = 1000     // 毫秒→秒转换因子
+
+// ============================================================================
+// 周期方向 — BTC 减半周期自动切换
+// ============================================================================
+
+// 熊市区间 [顶部, 底部) → 做空，其余 → 做多
+// cycle_enabled=false → 始终做多
+// 迁移注意: Web/App 版本应从 configs/base.yaml srp.cycle_dates 读取，而非硬编码
+bool in_bear = cycle_enabled and (
+               (time >= timestamp(2013, 11, 30, 0, 0) and time < timestamp(2015, 1, 14, 0, 0)) or
+               (time >= timestamp(2017, 12, 17, 0, 0) and time < timestamp(2018, 12, 15, 0, 0)) or
+               (time >= timestamp(2021, 11, 10, 0, 0) and time < timestamp(2022, 11, 21, 0, 0)) or
+               (time >= top_time and time < bottom_time))
+
+int trade_dir = in_bear ? -1 : 1
+
+// ============================================================================
+// 指标计算 (原版 SRP 逻辑)
+// ============================================================================
+
+bool in_date_range = limit_date_range ? (time >= start_time and time <= end_time) : true
+
+float core       = ta.vwma(src, Length)
+float vwma_above = core * (1 + ChangePercentage / 100)
+float vwma_below = core * (1 - ChangePercentage / 100)
+
+// [DOC-2] RSI 使用 close — 这是 Wilder's RSI 标准做法 (与 src 无关)
+float up   = ta.rma(math.max(ta.change(close), 0), rsi_len)
+float down = ta.rma(-math.min(ta.change(close), 0), rsi_len)
+float rsi  = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+float mf   = ta.mfi(src, mfi_len)
+
+// [DOC-1] 运算符优先级: rsi + (mf / 2)，即 MFI 权重为 RSI 的一半
+// 实际范围: 0~150 (RSI 0~100 + MFI/2 0~50)。abs() 冗余但无害。
+// 此公式沿用 Felix 原版设计，修改会改变所有交易信号，需完整回测验证。
+float rsi_mfi = math.abs(rsi + mf / 2)
+
+bool sig_long  = low <= vwma_below and (rsi_mfi < below)
+bool sig_short = high >= vwma_above and (rsi_mfi > above)
+
+// 根据周期方向选择入场信号
+bool entry_signal = trade_dir == 1 ? sig_long : sig_short
+
+// ============================================================================
+// 状态变量
+// ============================================================================
+
+var int    socounter       = 0
+var int    dealcount       = 0
+var float  deal_base       = 0.0
+var string last_exit_type  = ""
+var int    deal_start_time = 0
+var int    deal_dir        = 0    // 1=long deal, -1=short deal
+
+// 虚拟 DCA 追踪
+var float v_qty     = 0.0
+var float v_cost    = 0.0
+var float v_avg     = 0.0
+var float v_last_px = 0.0
+var int   v_count   = 0         // [FIX-2] 仅统计虚拟 DCA 次数
+
+// 统计追踪 (信息面板 + 迁移用)
+var float peak_equity        = 0.0
+var float max_drawdown_pct   = 0.0
+var int   exit_tp_count      = 0
+var int   exit_band_count    = 0
+var int   exit_sl_count      = 0
+var int   exit_cycle_count   = 0
+var float total_hold_sec     = 0.0
+var int   closed_deal_count  = 0
+var int   consec_losses      = 0
+var int   max_consec_losses  = 0
+
+// [FIX-G1] 状态重置 flag — 各出口设 true，集中执行重置 (消除 5 处重复代码)
+var bool  _need_reset        = false
+
+// 触轨信号: 使用 deal_dir 确保周期切换后残留仓位仍能正确平仓
+bool exit_band_signal = deal_dir == 1 ? sig_short : sig_long
+
+// ============================================================================
+// DCA 辅助函数 (方向感知)
+// ============================================================================
+
+calcNextSOprice(pcnt, dir) =>
+    if (dir == 1 and strategy.position_size > 0) or (dir == -1 and strategy.position_size < 0)
+        float _offset = math.round(pcnt / 100 * strategy.position_avg_price / syminfo.mintick) * syminfo.mintick
+        dir == 1 ? strategy.position_avg_price - _offset : strategy.position_avg_price + _offset
+    else
+        na
+
+// [FIX-B3] 迁移注意 — 双基准设计 (沿用 Felix 原版，不可修改公式):
+//   本函数: chg = |close - last_entry| / close × 100  (分母 = 当前价)
+//   calcNextSOprice: offset = pcnt% × avg_price        (基准 = 均价)
+//   两者配合 SOconditions 的 AND 逻辑更保守。Python 迁移必须精确复制此行为。
+calcChangeFromLastDeal() =>
+    if strategy.opentrades > 0
+        float last_deal = strategy.opentrades.entry_price(strategy.opentrades - 1)
+        math.abs(((close - last_deal) / close) * 100)
+    else
+        0.0
+
+SOconditions(dir) =>
+    float chg = calcChangeFromLastDeal()
+    float next_so = calcNextSOprice(minSOchange, dir)
+    if na(next_so)
+        false
+    else
+        dir == 1 ? (chg > minSOchange and close < next_so) : (chg > minSOchange and close > next_so)
+
+// 虚拟 DCA 触发条件 (方向感知)
+vSOconditions(dir) =>
+    if v_last_px <= 0
+        false
+    else
+        float chg = math.abs((close - v_last_px) / v_last_px) * 100
+        dir == 1 ? (chg > minSOchange and close < v_last_px) : (chg > minSOchange and close > v_last_px)
+
+// 止盈目标价 = 虚拟均价 × (1 ± 止盈%)
+float tp_target = v_avg > 0 ? (deal_dir == -1 ? v_avg * (1 - mintp) : v_avg * (1 + mintp)) : na
+
+// ============================================================================
+// 辅助函数
+// ============================================================================
+
+// 时间格式化 (基于 Felix 原版)
+_time_str(seconds) =>
+    if seconds >= 86400
+        str.tostring(math.round(seconds / 86400, 1)) + ' 天'
+    else if seconds >= 3600
+        str.tostring(math.round(seconds / 3600, 1)) + ' 小时'
+    else
+        str.tostring(math.round(seconds / 60, 1)) + ' 分钟'
+
+// 盈亏标签
+_make_pnl_label(exit_type) =>
+    if showpnllabel and strategy.position_size != 0
+        float pnl_val = deal_dir == -1 ? (strategy.position_avg_price - close) * math.abs(strategy.position_size) : (close - strategy.position_avg_price) * strategy.position_size
+        float pnl_pct = deal_dir == -1 ? (strategy.position_avg_price - close) / strategy.position_avg_price * 100 : (close - strategy.position_avg_price) / strategy.position_avg_price * 100
+        int elapsed_sec = (time - deal_start_time) / MS_PER_SEC
+        string dur = _time_str(elapsed_sec)
+        string msg = "[" + exit_type + "]\n"
+        msg += "盈亏金额 :  " + str.tostring(math.round(pnl_val, 2)) + "  " + str.tostring(syminfo.currency) + "\n"
+        msg += "持仓时间 :  " + dur + "\n"
+        msg += "盈亏比例 :  " + str.tostring(math.round(pnl_pct, 2)) + " %"
+        float topy = high + (high * LBL_Y_OFFSET)
+        color lbl_clr = pnl_val >= 0 ? color.new(C_PROFIT, 20) : color.new(C_BEAR, 20)
+        label.new(bar_index + 1, topy, text=msg, yloc=yloc.price, size=lbl_sz, style=label.style_label_lower_left, textcolor=#F5F5F5, textalign=text.align_left, color=lbl_clr)
+
+// JSON Alert 构建器 — Web / App Webhook 消费
+_na_str(val) =>
+    na(val) ? "null" : str.tostring(math.round(val, 2))
+
+// [FIX-F1] JSON 字符串安全: 防止 detail 中的特殊字符破坏 JSON 结构
+// 迁移到 Python/App 时应使用 json.dumps() 替代手动拼接
+_json_safe(s) =>
+    str.replace_all(str.replace_all(s, "\\", "/"), "\"", "'")
+
+// [FIX-F4] 补充 Webhook 必需字段: pos_size, avg_price, pnl
+// [FIX-F5] 补充 last_settled_pnl: 上一笔已结算交易的精确 PnL (含佣金)
+_build_alert(action, detail) =>
+    // 当前交易估算 PnL (exit alert 时 position 尚未关闭)
+    float _pnl = strategy.position_size != 0 ?
+         (deal_dir == -1 ? (strategy.position_avg_price - close) * math.abs(strategy.position_size) :
+          (close - strategy.position_avg_price) * strategy.position_size) : 0.0
+    // 上一笔已结算交易的精确 PnL (含佣金扣除)
+    float _last_pnl = strategy.closedtrades > 0 ? strategy.closedtrades.profit(strategy.closedtrades - 1) : 0.0
+    '{"v":"6.1"' +
+     ',"ts":' + str.tostring(time) +
+     ',"action":"' + action + '"' +
+     ',"ticker":"' + syminfo.ticker + '"' +
+     ',"tf":"' + timeframe.period + '"' +
+     ',"price":' + str.tostring(close) +
+     ',"dir":"' + (deal_dir == 1 ? "LONG" : deal_dir == -1 ? "SHORT" : "FLAT") + '"' +
+     ',"cycle":"' + (in_bear ? "BEAR" : "BULL") + '"' +
+     ',"deal":' + str.tostring(dealcount) +
+     ',"dca":' + str.tostring(socounter) +
+     ',"vdca":' + str.tostring(v_count) +
+     ',"pos_size":' + str.tostring(math.round(math.abs(strategy.position_size), 6)) +
+     ',"avg_price":' + _na_str(strategy.position_avg_price) +
+     ',"v_avg":' + _na_str(v_avg) +
+     ',"tp":' + _na_str(tp_target) +
+     ',"pnl":' + str.tostring(math.round(_pnl, 2)) +
+     ',"last_settled_pnl":' + str.tostring(math.round(_last_pnl, 2)) +
+     ',"equity":' + str.tostring(math.round(strategy.equity, 2)) +
+     ',"rsi_mfi":' + str.tostring(math.round(rsi_mfi, 1)) +
+     ',"detail":"' + _json_safe(detail) + '"' +
+     '}'
+
+// last_exit_bar: 防止同一根 bar 重复平仓
+// (Pine 的 strategy.position_size 在同 bar 内 strategy.close 后不会立刻更新)
+var int last_exit_bar = -1
+
+// ============================================================================
+// 0. 最大回撤追踪 (每 bar 更新)
+// ============================================================================
+
+if strategy.equity > peak_equity
+    peak_equity := strategy.equity
+float _current_dd = peak_equity > 0 ? (peak_equity - strategy.equity) / peak_equity * 100 : 0.0
+if _current_dd > max_drawdown_pct
+    max_drawdown_pct := _current_dd
+
+// ============================================================================
+// 1. 安全网 — 硬止损 (最高优先级，最先执行)
+// ============================================================================
+
+if bar_index != last_exit_bar and strategy.position_size != 0 and strategy.position_avg_price > 0
+    float dd = deal_dir == -1 ? (close - strategy.position_avg_price) / strategy.position_avg_price : (strategy.position_avg_price - close) / strategy.position_avg_price
+    if dd >= max_loss_pct
+        last_exit_type := "止损"
+        _make_pnl_label("止损")
+        string close_id = deal_dir == -1 ? "SHORT" : "LONG"
+        strategy.close(close_id, comment="止损 " + str.tostring(math.round(dd * 100, 1)) + "%")
+        if alert_enabled
+            alert(_build_alert("EXIT_SL", "止损 " + str.tostring(math.round(dd * 100, 1)) + "%"), freq=alert.freq_once_per_bar_close)
+        // 统计
+        exit_sl_count += 1
+        consec_losses += 1
+        if consec_losses > max_consec_losses
+            max_consec_losses := consec_losses
+        total_hold_sec += (time - deal_start_time) / MS_PER_SEC
+        closed_deal_count += 1
+        deal_dir := 0
+        last_exit_bar := bar_index
+        _need_reset := true
+
+// ============================================================================
+// 2. 周期切换 — 方向改变时强制平仓
+// ============================================================================
+
+if bar_index != last_exit_bar and strategy.position_size != 0 and deal_dir != 0 and deal_dir != trade_dir
+    last_exit_type := "周期切换"
+    _make_pnl_label("周期切换")
+    string close_id = deal_dir == -1 ? "SHORT" : "LONG"
+    strategy.close(close_id, comment="周期切换")
+    if alert_enabled
+        alert(_build_alert("EXIT_CYCLE", "周期切换"), freq=alert.freq_once_per_bar_close)
+    // 统计 — 周期切换盈亏取决于实际 PnL
+    exit_cycle_count += 1
+    float _cycle_pnl = deal_dir == -1 ? (strategy.position_avg_price - close) : (close - strategy.position_avg_price)
+    if _cycle_pnl < 0
+        consec_losses += 1
+        if consec_losses > max_consec_losses
+            max_consec_losses := consec_losses
+    else
+        consec_losses := 0
+    total_hold_sec += (time - deal_start_time) / MS_PER_SEC
+    closed_deal_count += 1
+    deal_dir := 0
+    last_exit_bar := bar_index
+    _need_reset := true
+
+// ============================================================================
+// 3. 平仓逻辑 (方向感知)
+// ============================================================================
+
+// 主要: 价格突破虚拟均价止盈目标
+if bar_index != last_exit_bar and strategy.position_size != 0 and v_avg > 0
+    bool tp_hit = deal_dir == -1 ? (close < tp_target) : (close > tp_target)
+    if tp_hit
+        last_exit_type := "止盈"
+        _make_pnl_label("止盈")
+        string close_id = deal_dir == -1 ? "SHORT" : "LONG"
+        strategy.close(close_id, comment="止盈 v" + str.tostring(v_count))
+        if alert_enabled
+            alert(_build_alert("EXIT_TP", "止盈 v" + str.tostring(v_count)), freq=alert.freq_once_per_bar_close)
+        // 统计
+        exit_tp_count += 1
+        consec_losses := 0
+        total_hold_sec += (time - deal_start_time) / MS_PER_SEC
+        closed_deal_count += 1
+        deal_dir := 0
+        last_exit_bar := bar_index
+        _need_reset := true
+
+    // 备选: 反向触轨信号
+    // mintpbool 开启: 仅在盈利时才触轨平仓
+    // mintpbool 关闭: 反向信号直接平仓，不论盈亏
+    else
+        bool in_profit = deal_dir == -1 ? (close < strategy.position_avg_price) : (close > strategy.position_avg_price)
+        if exit_band_signal and (mintpbool ? in_profit : true)
+            last_exit_type := "触轨"
+            _make_pnl_label("触轨")
+            string close_id = deal_dir == -1 ? "SHORT" : "LONG"
+            strategy.close(close_id, comment="触轨平仓")
+            if alert_enabled
+                alert(_build_alert("EXIT_BAND", "触轨平仓"), freq=alert.freq_once_per_bar_close)
+            // 统计
+            exit_band_count += 1
+            float _band_pnl = deal_dir == -1 ? (strategy.position_avg_price - close) : (close - strategy.position_avg_price)
+            if _band_pnl < 0
+                consec_losses += 1
+                if consec_losses > max_consec_losses
+                    max_consec_losses := consec_losses
+            else
+                consec_losses := 0
+            total_hold_sec += (time - deal_start_time) / MS_PER_SEC
+            closed_deal_count += 1
+            deal_dir := 0
+            last_exit_bar := bar_index
+            _need_reset := true
+
+else if bar_index != last_exit_bar and strategy.position_size != 0 and v_avg == 0
+    // 边界情况: 入场后第一根 bar，v_avg 尚未设置
+    bool in_profit = deal_dir == -1 ? (close < strategy.position_avg_price) : (close > strategy.position_avg_price)
+    if exit_band_signal and (mintpbool ? in_profit : true)
+        last_exit_type := "触轨"
+        _make_pnl_label("触轨")
+        string close_id = deal_dir == -1 ? "SHORT" : "LONG"
+        strategy.close(close_id, comment="触轨平仓")
+        if alert_enabled
+            alert(_build_alert("EXIT_BAND", "触轨平仓 (首bar)"), freq=alert.freq_once_per_bar_close)
+        // 统计
+        exit_band_count += 1
+        float _band_pnl = deal_dir == -1 ? (strategy.position_avg_price - close) : (close - strategy.position_avg_price)
+        if _band_pnl < 0
+            consec_losses += 1
+            if consec_losses > max_consec_losses
+                max_consec_losses := consec_losses
+        else
+            consec_losses := 0
+        total_hold_sec += (time - deal_start_time) / MS_PER_SEC
+        closed_deal_count += 1
+        deal_dir := 0
+        last_exit_bar := bar_index
+        _need_reset := true
+
+// ============================================================================
+// 3.5 [FIX-G1] 集中状态重置 — 任何出口设 _need_reset 后在此统一清零
+// 迁移注意: Python 实现应提取为 reset_deal_state() 方法
+// ============================================================================
+
+if _need_reset
+    v_qty     := 0.0
+    v_cost    := 0.0
+    v_avg     := 0.0
+    v_last_px := 0.0
+    v_count   := 0
+    socounter := 0
+    _need_reset := false
+
+// ============================================================================
+// 4. 虚拟 DCA (真实加仓用完后) — 方向感知
+// ============================================================================
+
+// [FIX-D3] sonum > 1 → sonum >= 1: 允许 DCA次数=0 时虚拟 DCA 仍生效 (受 vdca_enabled 独立控制)
+if vdca_enabled and sonum >= 1 and strategy.position_size != 0 and strategy.opentrades >= sonum and deal_dir == trade_dir and v_count < vdca_max and vSOconditions(deal_dir)
+    float vdca_qty = v_qty * safety
+    v_cost := v_cost + vdca_qty * close
+    v_qty  := v_qty + vdca_qty
+    v_avg  := v_cost / v_qty
+    v_last_px := close
+    v_count += 1
+
+// ============================================================================
+// 5. 状态同步 — 空仓时重置虚拟状态 (必须在入场逻辑之前执行)
+// ============================================================================
+
+if strategy.position_size == 0 and v_qty > 0
+    v_qty := 0.0
+    v_cost := 0.0
+    v_avg := 0.0
+    v_last_px := 0.0
+    v_count := 0
+    socounter := 0
+    deal_dir := 0
+
+// ============================================================================
+// 6. 入场逻辑 — 方向感知
+// ============================================================================
+
+// 新开仓 (无持仓时)
+if bar_index != last_exit_bar and entry_signal and strategy.opentrades == 0 and in_date_range
+    socounter := 0
+    dealcount += 1
+    deal_start_time := time
+    deal_dir := trade_dir
+    deal_base := strategy.equity * base_pct
+    float qty = deal_base / close
+
+    if trade_dir == 1
+        strategy.entry("LONG", strategy.long, qty=qty, comment="开仓 #" + str.tostring(dealcount))
+    else
+        strategy.entry("SHORT", strategy.short, qty=qty, comment="开仓 #" + str.tostring(dealcount))
+    if alert_enabled
+        alert(_build_alert("ENTRY", "开仓 #" + str.tostring(dealcount)), freq=alert.freq_once_per_bar_close)
+
+    v_qty     := qty
+    v_cost    := qty * close
+    v_avg     := close
+    v_last_px := close
+    v_count   := 0
+
+// 真实 DCA (与持仓同方向，最多 sonum-1 次)
+if bar_index != last_exit_bar and entry_signal and strategy.opentrades > 0 and strategy.opentrades < sonum and in_date_range and deal_dir == trade_dir and SOconditions(deal_dir)
+    socounter += 1
+    float dca_qty = DCATYPE ? (math.abs(strategy.position_size) * safety) : (deal_base * math.pow(safety, socounter)) / close
+
+    if deal_dir == 1
+        strategy.entry("LONG", strategy.long, qty=dca_qty, comment="加仓 #" + str.tostring(socounter))
+    else
+        strategy.entry("SHORT", strategy.short, qty=dca_qty, comment="加仓 #" + str.tostring(socounter))
+    if alert_enabled
+        alert(_build_alert("DCA", "加仓 #" + str.tostring(socounter)), freq=alert.freq_once_per_bar_close)
+
+    // 同步虚拟均价追踪 (含真实 DCA 的影响)
+    v_cost    := v_cost + dca_qty * close
+    v_qty     := v_qty + dca_qty
+    v_avg     := v_cost / v_qty
+    v_last_px := close
+    // [FIX-2] 不累加 v_count — v_count 仅统计虚拟 DCA 次数
+
+// ============================================================================
+// 7. 可视化
+// ============================================================================
+
+// --- SRP 通道 (受 show_channel 控制) ---
+p_upper = plot(show_channel ? vwma_above : na, "上轨", color.new(C_CHANNEL_UP, 30))
+p_core  = plot(show_channel ? core : na, "VWMA 中线", color.new(C_CHANNEL_MID, 40))
+p_lower = plot(show_channel ? vwma_below : na, "下轨", color.new(C_CHANNEL_DN, 30))
+fill(p_upper, p_lower, color=show_channel ? color.new(C_SLATE, 92) : na, title="SRP 通道")
+
+// --- 持仓线 + 区域填充 (受 showdeals 控制) ---
+bool in_deal = strategy.position_size != 0 and showdeals
+
+// 止盈参考线 (用于区域填充)
+float tp_fill_ref = na
+if in_deal
+    if v_avg > 0
+        tp_fill_ref := deal_dir == -1 ? v_avg * (1 - mintp) : v_avg * (1 + mintp)
+    else
+        tp_fill_ref := deal_dir == -1 ? strategy.position_avg_price * (1 - mintp) : strategy.position_avg_price * (1 + mintp)
+
+p_avg = plot(in_deal ? strategy.position_avg_price : na,
+     "持仓均价", color.new(C_SOFT_WHITE, 10), style=plot.style_linebr, linewidth=1)
+
+// 虚拟均价: 仅在有意义时显示 (做多时低于实际均价, 做空时高于实际均价)
+// [FIX-E2] 0.1% 容差带防止 v_avg ≈ position_avg_price 时浮点闪烁
+bool show_v_avg = in_deal and v_avg > 0 and ((deal_dir == 1 and v_avg < strategy.position_avg_price * (1 - V_AVG_DISPLAY_TOL)) or (deal_dir == -1 and v_avg > strategy.position_avg_price * (1 + V_AVG_DISPLAY_TOL)))
+plot(show_v_avg ? v_avg : na,
+     "虚拟均价", color.new(C_ACCENT, 10), style=plot.style_linebr, linewidth=2)
+
+// 止盈目标线
+plot(in_deal and v_avg > 0 ? tp_target : na,
+     "止盈目标", color.new(C_PROFIT, 15), style=plot.style_linebr, linewidth=1)
+
+// 止盈区域参考线 (不可见, 用于填充)
+p_tp_z = plot(tp_fill_ref, "止盈参考", color.new(C_PROFIT, 100), style=plot.style_linebr, display=display.none)
+
+// 止损线 (方向感知)
+float sl_line = na
+if in_deal
+    sl_line := deal_dir == -1 ? strategy.position_avg_price * (1 + max_loss_pct) : strategy.position_avg_price * (1 - max_loss_pct)
+p_sl = plot(sl_line, "止损线", color.new(C_BEAR, 10), style=plot.style_linebr, linewidth=1)
+
+// 下次 DCA 触发价
+float next_dca_line = na
+if in_deal and strategy.opentrades > 0 and strategy.opentrades < sonum
+    next_dca_line := calcNextSOprice(minSOchange, deal_dir)
+plot(next_dca_line, "下次加仓", color.new(C_GOLD, 30), style=plot.style_linebr, linewidth=1)
+
+// 区域填充 (颜色可在「样式」tab 自定义)
+fill(p_tp_z, p_avg, color=showdeals ? color.new(C_PROFIT, 87) : na, title="盈利区域")
+fill(p_avg,  p_sl,  color=showdeals ? color.new(C_BEAR, 87) : na,   title="亏损区域")
+
+// --- 入场 / 出场标记 (受 show_markers 控制) ---
+// [FIX-3] 加入 last_exit_bar 防止在止损/周期切换同 bar 显示虚假入场标记
+bool base_entry_cond = bar_index != last_exit_bar and entry_signal and strategy.opentrades == 0 and in_date_range
+bool dca_entry_cond  = bar_index != last_exit_bar and entry_signal and deal_dir == trade_dir and SOconditions(deal_dir) and strategy.opentrades > 0 and strategy.opentrades < sonum and in_date_range
+
+plotshape(show_markers and base_entry_cond and trade_dir == 1,  "开多",      shape.triangleup,   location.belowbar, C_ENTRY,                      size=size.small)
+plotshape(show_markers and dca_entry_cond  and trade_dir == 1,  "加仓做多",  shape.triangleup,   location.belowbar, color.new(C_ACCENT, 15),      size=size.tiny)
+plotshape(show_markers and base_entry_cond and trade_dir == -1, "开空",      shape.triangledown, location.abovebar, C_BEAR,                       size=size.small)
+plotshape(show_markers and dca_entry_cond  and trade_dir == -1, "加仓做空",  shape.triangledown, location.abovebar, color.new(C_DCA_SHORT, 15),   size=size.tiny)
+
+bool just_closed = strategy.position_size == 0 and strategy.position_size[1] != 0
+plotshape(show_markers and just_closed and last_exit_type == "止盈",    "止盈",    shape.flag,    location.abovebar, C_PROFIT,   size=size.tiny)
+plotshape(show_markers and just_closed and last_exit_type == "触轨",    "触轨平仓",  shape.xcross,  location.abovebar, C_GOLD,     size=size.tiny)
+plotshape(show_markers and just_closed and last_exit_type == "止损",    "止损",    shape.xcross,  location.abovebar, C_BEAR,     size=size.small)
+plotshape(show_markers and just_closed and last_exit_type == "周期切换", "周期切换", shape.diamond, location.abovebar, C_LAVENDER, size=size.small)
+
+// --- 背景色 (受 show_bg 控制) ---
+bgcolor(show_bg and strategy.position_size > 0 ? color.new(C_ENTRY, 95) : show_bg and strategy.position_size < 0 ? color.new(C_BEAR, 95) : na)
+bgcolor(show_bg and trade_dir == -1 and strategy.position_size == 0 ? color.new(C_BEAR, 97) : na, title="熊市背景")
+
+// --- Data Window 数据导出 (Web / App 迁移用) ---
+plot(rsi_mfi,            "RSI-MFI",      display=display.data_window)
+plot(v_avg,              "虚拟均价",     display=display.data_window)
+plot(v_count,            "虚拟DCA次数",  display=display.data_window)
+plot(tp_target,          "止盈目标价",   display=display.data_window)
+plot(trade_dir,          "周期方向",     display=display.data_window)
+plot(deal_dir,           "持仓方向",     display=display.data_window)
+plot(socounter,          "真实DCA次数",  display=display.data_window)
+plot(max_drawdown_pct,   "最大回撤%",    display=display.data_window)
+plot(consec_losses,      "连续亏损",     display=display.data_window)
+// [FIX-F5] 上笔已结算交易的精确 PnL (含佣金扣除)，用于外部对账
+plot(strategy.closedtrades > 0 ? strategy.closedtrades.profit(strategy.closedtrades - 1) : na, "上笔结算PnL", display=display.data_window)
+plot(strategy.closedtrades > 0 ? strategy.closedtrades.commission(strategy.closedtrades - 1) : na, "上笔佣金", display=display.data_window)
+
+// ============================================================================
+// 信息面板
+// ============================================================================
+
+_tbl_pos() =>
+    switch tbl_position
+        "Top Left"      => position.top_left
+        "Top Center"    => position.top_center
+        "Top Right"     => position.top_right
+        "Bottom Left"   => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Right"  => position.bottom_right
+        "Middle Left"   => position.middle_left
+        "Middle Right"  => position.middle_right
+
+// [FIX-B5] 区分 DCA 模式: "仓位倍增" 是指数增长，"基础倍增" 是几何级数
+_calc_required_capital() =>
+    float _base = strategy.equity * base_pct
+    float total = _base
+    if DCATYPE
+        // 仓位倍增: 每次 DCA 量 = 当前持仓 × safety
+        // 累计持仓: base × (1+safety)^n，每层成本 ≈ 持仓量 × 当前价
+        float cum_qty = 1.0
+        for x = 1 to sonum - 1 by 1
+            float dca_layer = cum_qty * safety
+            total += _base * dca_layer
+            cum_qty += dca_layer
+    else
+        // 基础倍增: 每次 DCA 量 = base × safety^n
+        for x = 1 to sonum - 1 by 1
+            total += _base * math.pow(safety, x)
+    total
+
+_tbl_row(tbl, row, label_text, value_text, val_color) =>
+    table.cell(tbl, 0, row, label_text, text_color=C_GOLD,     text_size=tbl_sz, bgcolor=C_DARK_BG,  text_halign=text.align_left)
+    table.cell(tbl, 1, row, value_text, text_color=val_color,   text_size=tbl_sz, bgcolor=C_CHARCOAL, text_halign=text.align_right)
+
+// 浮动盈亏 (延续 Felix 原版 statusOpen 格式)
+_statusOpen() =>
+    if strategy.opentrades == 0
+        "无持仓"
+    else
+        float pnl_pct = deal_dir == -1 ? (strategy.position_avg_price - close) / strategy.position_avg_price * 100 : (close - strategy.position_avg_price) / strategy.position_avg_price * 100
+        str.tostring(strategy.opentrades) + " 笔\n" + "------" + "\n" + "浮动盈亏 : $" + str.tostring(math.round(strategy.openprofit, 2)) + "\n" + "------" + "\n" + "盈亏比例 : " + str.tostring(math.round(pnl_pct, 2)) + " %"
+
+var table tbl = na
+if barstate.isconfirmed and show_table
+    if na(tbl)
+        tbl := table.new(_tbl_pos(), 2, 17, frame_color=C_SLATE, frame_width=1, border_width=1)
+    color c_val = C_SOFT_WHITE
+
+    // Row 0: Title — neon gradient header
+    color c_head = color.from_gradient(close, low, high, C_ENTRY, C_LAVENDER)
+    table.cell(tbl, 0, 0, "SRP v6.1",  bgcolor=c_head, text_color=C_CHARCOAL,    text_size=tbl_sz, text_halign=text.align_left)
+    table.cell(tbl, 1, 0, "AlgVex",    bgcolor=c_head, text_color=C_CHARCOAL,    text_size=tbl_sz, text_halign=text.align_right)
+
+    // Row 1: 交易状态 — floating PnL
+    color status_clr = strategy.openprofit >= 0 ? C_PROFIT : C_BEAR
+    table.cell(tbl, 0, 1, "交易状态", text_color=C_GOLD, text_size=tbl_sz, bgcolor=C_DARK_BG, text_halign=text.align_left)
+    table.cell(tbl, 1, 1, _statusOpen(), text_color=status_clr, text_size=tbl_sz, bgcolor=C_CHARCOAL, text_halign=text.align_right)
+
+    // Row 2: 周期阶段
+    color cycle_clr = trade_dir == 1 ? C_ENTRY : C_BEAR
+    string dir_text = trade_dir == 1 ? "做多 ↑" : "做空 ↓"
+    _tbl_row(tbl, 2, "周期阶段", (in_bear ? "熊市" : "牛市") + "  " + dir_text, cycle_clr)
+
+    // Row 3: RSI-MFI 实时值 + 阈值
+    color rsi_clr = rsi_mfi < below ? C_ENTRY : rsi_mfi > above ? C_BEAR : c_val
+    string rsi_text = str.tostring(math.round(rsi_mfi, 1)) + "  [" + str.tostring(below, "#") + " / " + str.tostring(above, "#") + "]"
+    _tbl_row(tbl, 3, "RSI-MFI", rsi_text, rsi_clr)
+
+    // Row 4: 参数配置
+    string cfg = "SRP " + str.tostring(ChangePercentage, "#.#") + "% · DCA " + str.tostring(minSOchange, "#.#") + "% · SL " + str.tostring(max_loss_pct * 100, "#.#") + "%"
+    _tbl_row(tbl, 4, "参数配置", cfg, c_val)
+
+    // Row 5: DCA 加仓
+    int dca_count = strategy.opentrades > 0 ? strategy.opentrades - 1 : 0
+    string dca_text = str.tostring(dca_count) + " / " + str.tostring(sonum - 1) + "  x" + str.tostring(safety, "#.#")
+    _tbl_row(tbl, 5, "DCA 加仓", dca_text, dca_count > 0 ? C_ACCENT : c_val)
+
+    // Row 6: 虚拟加仓
+    string v_text = v_count > 0 and strategy.position_size != 0 ? "$" + str.tostring(math.round(v_avg, 1)) + "  (第" + str.tostring(v_count) + "次)" : "—"
+    _tbl_row(tbl, 6, "虚拟加仓", v_text, C_ACCENT)
+
+    // Row 7: 止盈目标
+    string tp_text = not na(tp_target) and strategy.position_size != 0 ? "$" + str.tostring(math.round(tp_target, 1)) + "  (" + (deal_dir == -1 ? "-" : "+") + str.tostring(mintp * 100, "#.#") + "%)" : "—"
+    _tbl_row(tbl, 7, "止盈目标", tp_text, C_PROFIT)
+
+    // Row 8: 所需资金
+    _tbl_row(tbl, 8, "所需资金", "$" + str.tostring(math.round(_calc_required_capital(), 0)), c_val)
+
+    // Row 9: 胜率 · 盈亏比
+    int total_t = strategy.wintrades + strategy.losstrades
+    float wr = total_t > 0 ? strategy.wintrades / total_t * 100 : 0
+    float pf = strategy.grossloss != 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : 0
+    _tbl_row(tbl, 9, "胜率 · PF", str.tostring(math.round(wr, 1)) + "%  ·  " + str.tostring(math.round(pf, 2)), c_val)
+
+    // Row 10: 交易次数
+    _tbl_row(tbl, 10, "交易次数", str.tostring(dealcount), c_val)
+
+    // Row 11: 平仓分布 (止盈 / 触轨 / 止损 / 周期切换)
+    string exit_text = "盈" + str.tostring(exit_tp_count) + " 轨" + str.tostring(exit_band_count) + " 损" + str.tostring(exit_sl_count) + " 切" + str.tostring(exit_cycle_count)
+    _tbl_row(tbl, 11, "平仓分布", exit_text, c_val)
+
+    // Row 12: 总收益率
+    float ret_pct = strategy.initial_capital > 0 ? strategy.netprofit / strategy.initial_capital * 100 : 0
+    _tbl_row(tbl, 12, "总收益率", str.tostring(math.round(ret_pct, 2)) + "%", ret_pct >= 0 ? C_PROFIT : C_BEAR)
+
+    // Row 13: 盈亏总额
+    _tbl_row(tbl, 13, "盈亏总额", "$" + str.tostring(math.round(strategy.netprofit, 2)), strategy.netprofit >= 0 ? C_PROFIT : C_BEAR)
+
+    // Row 14: 最大回撤
+    _tbl_row(tbl, 14, "最大回撤", str.tostring(math.round(max_drawdown_pct, 2)) + "%", max_drawdown_pct > 10 ? C_BEAR : c_val)
+
+    // Row 15: 平均持仓 + 连续亏损
+    float avg_hold = closed_deal_count > 0 ? total_hold_sec / closed_deal_count : 0
+    string hold_text = closed_deal_count > 0 ? _time_str(avg_hold) + "  连亏" + str.tostring(max_consec_losses) : "—"
+    _tbl_row(tbl, 15, "持仓/连亏", hold_text, max_consec_losses >= 3 ? C_BEAR : c_val)
+
+    // Row 16: 下次切换
+    string next_switch = not cycle_enabled ? "周期切换已关闭" : time < top_time ? "→ 转空 @ 顶部" : time < bottom_time ? "→ 转多 @ 底部" : "牛市做多中"
+    _tbl_row(tbl, 16, "下次切换", next_switch, C_CHANNEL_MID)

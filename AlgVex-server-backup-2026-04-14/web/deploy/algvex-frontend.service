@@ -1,0 +1,27 @@
+[Unit]
+Description=Algvex Frontend (Next.js)
+After=network.target
+
+[Service]
+Type=simple
+User=linuxuser
+Group=linuxuser
+WorkingDirectory=/home/linuxuser/nautilus_AlgVex/web/frontend
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/linuxuser/nautilus_AlgVex/web/frontend/.next
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

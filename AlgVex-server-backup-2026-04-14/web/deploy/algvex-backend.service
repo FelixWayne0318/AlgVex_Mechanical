@@ -1,0 +1,28 @@
+[Unit]
+Description=Algvex Backend API
+After=network.target
+
+[Service]
+Type=simple
+User=linuxuser
+Group=linuxuser
+WorkingDirectory=/home/linuxuser/nautilus_AlgVex/web/backend
+Environment=PATH=/home/linuxuser/nautilus_AlgVex/web/backend/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=ALGVEX_PATH=/home/linuxuser/nautilus_AlgVex
+ExecStart=/home/linuxuser/nautilus_AlgVex/web/backend/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/linuxuser/nautilus_AlgVex/web/backend
+ReadWritePaths=/home/linuxuser/nautilus_AlgVex/logs
+ReadWritePaths=/home/linuxuser/nautilus_AlgVex/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

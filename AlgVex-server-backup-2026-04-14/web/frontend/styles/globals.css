@@ -1,0 +1,659 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================================
+   AlgVex - Algorithmic Trading Dashboard
+   Deep space aesthetic with cyan/teal primary + glassmorphism
+   ============================================================================ */
+
+@layer base {
+  :root {
+    /* Dark theme - Deep space aesthetic */
+    --background: 222 47% 5%;
+    --foreground: 210 40% 98%;
+
+    /* Card surfaces */
+    --card: 222 47% 7%;
+    --card-foreground: 210 40% 98%;
+
+    /* Primary - Vibrant cyan/teal (signature color) */
+    --primary: 173 80% 50%;
+    --primary-foreground: 222 47% 5%;
+
+    /* Secondary */
+    --secondary: 217 33% 12%;
+    --secondary-foreground: 210 40% 98%;
+
+    /* Muted elements */
+    --muted: 217 33% 15%;
+    --muted-foreground: 215 20% 55%;
+
+    /* Accent - Purple glow */
+    --accent: 263 70% 60%;
+    --accent-foreground: 210 40% 98%;
+
+    /* Destructive */
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+
+    /* Borders and inputs */
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 173 80% 50%;
+
+    /* Border radius */
+    --radius: 0.75rem;
+
+    /* Trading colors */
+    --profit: 160 84% 39%;
+    --loss: 0 72% 51%;
+    --warning: 38 92% 50%;
+
+    /* Chart colors */
+    --chart-1: 173 80% 50%;
+    --chart-2: 263 70% 60%;
+    --chart-3: 160 84% 39%;
+    --chart-4: 38 92% 50%;
+    --chart-5: 0 72% 51%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    overflow-x: hidden;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Selection highlight */
+  ::selection {
+    @apply bg-primary/30 text-foreground;
+  }
+}
+
+/* ============================================================================
+   Custom Scrollbar
+   ============================================================================ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-muted-foreground/20 rounded-full transition-colors;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted-foreground/40;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.2) transparent;
+}
+
+/* ============================================================================
+   Background Effects
+   ============================================================================ */
+.gradient-bg {
+  background:
+    radial-gradient(ellipse 80% 80% at 50% -20%, hsl(var(--primary) / 0.15), transparent),
+    radial-gradient(ellipse 60% 60% at 80% 50%, hsl(var(--accent) / 0.08), transparent),
+    linear-gradient(180deg, hsl(var(--background)) 0%, hsl(222 47% 3%) 100%);
+}
+
+.gradient-card {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--card) / 0.8) 0%,
+    hsl(var(--card) / 0.4) 100%
+  );
+  backdrop-filter: blur(10px);
+}
+
+/* Mesh gradient for hero */
+.mesh-gradient {
+  background:
+    radial-gradient(at 40% 20%, hsl(var(--primary) / 0.3) 0px, transparent 50%),
+    radial-gradient(at 80% 0%, hsl(var(--accent) / 0.2) 0px, transparent 50%),
+    radial-gradient(at 0% 50%, hsl(var(--primary) / 0.2) 0px, transparent 50%),
+    radial-gradient(at 80% 100%, hsl(var(--accent) / 0.15) 0px, transparent 50%),
+    radial-gradient(at 0% 100%, hsl(var(--primary) / 0.1) 0px, transparent 50%);
+}
+
+/* Grid pattern overlay */
+.grid-pattern {
+  background-image:
+    linear-gradient(hsl(var(--border) / 0.3) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(var(--border) / 0.3) 1px, transparent 1px);
+  background-size: 60px 60px;
+  mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, black 40%, transparent 100%);
+}
+
+/* Noise texture */
+.noise-overlay {
+  position: relative;
+}
+
+.noise-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  opacity: 0.02;
+  pointer-events: none;
+}
+
+/* ============================================================================
+   Glow Effects
+   ============================================================================ */
+.glow-primary {
+  box-shadow:
+    0 0 20px hsl(var(--primary) / 0.4),
+    0 0 40px hsl(var(--primary) / 0.2),
+    inset 0 0 20px hsl(var(--primary) / 0.1);
+}
+
+.glow-profit {
+  box-shadow: 0 0 20px hsl(var(--profit) / 0.4);
+}
+
+.glow-loss {
+  box-shadow: 0 0 20px hsl(var(--loss) / 0.4);
+}
+
+.glow-accent {
+  box-shadow: 0 0 30px hsl(var(--accent) / 0.3);
+}
+
+/* Text glow */
+.text-glow {
+  text-shadow: 0 0 30px hsl(var(--primary) / 0.5);
+}
+
+/* ============================================================================
+   Glass Effects
+   ============================================================================ */
+.glass {
+  background: hsl(var(--card) / 0.6);
+  backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid hsl(var(--border) / 0.5);
+}
+
+.glass-strong {
+  background: hsl(var(--card) / 0.8);
+  backdrop-filter: blur(24px) saturate(200%);
+  border: 1px solid hsl(var(--border) / 0.6);
+}
+
+/* ============================================================================
+   Card Styles
+   ============================================================================ */
+.stat-card {
+  @apply relative overflow-hidden transition-all duration-300;
+  background: linear-gradient(
+    135deg,
+    hsl(var(--card)) 0%,
+    hsl(var(--card) / 0.8) 100%
+  );
+}
+
+.stat-card::before {
+  content: "";
+  @apply absolute inset-0 opacity-0 transition-opacity duration-300;
+  background: linear-gradient(
+    135deg,
+    hsl(var(--primary) / 0.1) 0%,
+    transparent 50%
+  );
+}
+
+.stat-card:hover::before {
+  @apply opacity-100;
+}
+
+.stat-card:hover {
+  @apply border-primary/40 scale-[1.02];
+  box-shadow: 0 10px 40px hsl(var(--primary) / 0.1);
+}
+
+/* Feature card with icon */
+.feature-card {
+  @apply relative overflow-hidden;
+}
+
+.feature-card .icon-wrapper {
+  @apply relative z-10 transition-transform duration-300;
+}
+
+.feature-card:hover .icon-wrapper {
+  @apply scale-110;
+}
+
+/* ============================================================================
+   Chart Container
+   ============================================================================ */
+.chart-container {
+  @apply relative w-full rounded-xl overflow-hidden;
+  background: linear-gradient(
+    180deg,
+    hsl(var(--card)) 0%,
+    hsl(222 47% 4%) 100%
+  );
+}
+
+.chart-container::before {
+  content: "";
+  @apply absolute inset-0 pointer-events-none;
+  background: linear-gradient(
+    0deg,
+    hsl(var(--primary) / 0.02) 0%,
+    transparent 30%
+  );
+}
+
+/* TradingView widget container */
+.tradingview-widget {
+  @apply w-full rounded-xl overflow-hidden;
+  min-height: 400px;
+}
+
+/* ============================================================================
+   Status Indicators
+   ============================================================================ */
+.status-dot {
+  @apply relative h-2.5 w-2.5 rounded-full;
+}
+
+.status-dot.active {
+  background-color: hsl(var(--profit));
+  animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.status-dot.inactive {
+  @apply bg-muted-foreground;
+}
+
+.status-dot.warning {
+  background-color: hsl(var(--warning));
+  animation: pulse-glow-warning 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 hsl(var(--profit) / 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 8px hsl(var(--profit) / 0);
+  }
+}
+
+@keyframes pulse-glow-warning {
+  0%, 100% {
+    box-shadow: 0 0 0 0 hsl(var(--warning) / 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 8px hsl(var(--warning) / 0);
+  }
+}
+
+/* ============================================================================
+   Profit/Loss Display
+   ============================================================================ */
+.profit-value {
+  color: hsl(var(--profit));
+  font-weight: 600;
+}
+
+.loss-value {
+  color: hsl(var(--loss));
+  font-weight: 600;
+}
+
+.profit-bg {
+  background-color: hsl(var(--profit) / 0.1);
+  color: hsl(var(--profit));
+  border: 1px solid hsl(var(--profit) / 0.2);
+}
+
+.loss-bg {
+  background-color: hsl(var(--loss) / 0.1);
+  color: hsl(var(--loss));
+  border: 1px solid hsl(var(--loss) / 0.2);
+}
+
+/* ============================================================================
+   Table Styles
+   ============================================================================ */
+.data-table {
+  @apply w-full;
+}
+
+.data-table thead th {
+  @apply px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider;
+  @apply bg-muted/30 border-b border-border;
+}
+
+.data-table tbody tr {
+  @apply border-b border-border/50 transition-colors;
+}
+
+.data-table tbody tr:hover {
+  @apply bg-muted/20;
+}
+
+.data-table tbody td {
+  @apply px-4 py-3 text-sm;
+}
+
+/* ============================================================================
+   Form Elements
+   ============================================================================ */
+.form-input {
+  @apply w-full px-4 py-2.5 rounded-lg;
+  @apply bg-muted/50 border border-border;
+  @apply text-foreground placeholder:text-muted-foreground;
+  @apply focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary;
+  @apply transition-all duration-200;
+}
+
+.form-input:hover {
+  @apply border-muted-foreground/40;
+}
+
+.form-select {
+  @apply form-input appearance-none cursor-pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 1rem;
+  padding-right: 2.5rem;
+}
+
+.form-label {
+  @apply block text-sm font-medium text-muted-foreground mb-1.5;
+}
+
+.form-group {
+  @apply space-y-1.5;
+}
+
+/* Toggle switch */
+.toggle {
+  @apply relative inline-flex h-6 w-11 items-center rounded-full;
+  @apply bg-muted transition-colors cursor-pointer;
+}
+
+.toggle[data-state="checked"] {
+  @apply bg-primary;
+}
+
+.toggle .toggle-thumb {
+  @apply block h-4 w-4 rounded-full bg-white transition-transform;
+  @apply translate-x-1;
+}
+
+.toggle[data-state="checked"] .toggle-thumb {
+  @apply translate-x-6;
+}
+
+/* ============================================================================
+   Sidebar Navigation
+   ============================================================================ */
+.sidebar-nav {
+  @apply flex flex-col gap-1;
+}
+
+.sidebar-nav-item {
+  @apply flex items-center gap-3 px-3 py-2.5 rounded-lg;
+  @apply text-muted-foreground transition-all duration-200;
+  @apply hover:bg-muted/50 hover:text-foreground;
+}
+
+.sidebar-nav-item.active {
+  @apply bg-primary/10 text-primary border-l-2 border-primary;
+}
+
+.sidebar-nav-item .icon {
+  @apply h-5 w-5;
+}
+
+/* ============================================================================
+   Animations
+   ============================================================================ */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out forwards;
+}
+
+.animate-slide-in {
+  animation: slide-in-right 0.3s ease-out forwards;
+}
+
+.animate-scale-in {
+  animation: scale-in 0.2s ease-out forwards;
+}
+
+/* Stagger children */
+.stagger-children > * {
+  @apply opacity-0;
+  animation: fade-in 0.4s ease-out forwards;
+}
+
+.stagger-children > *:nth-child(1) { animation-delay: 0.05s; }
+.stagger-children > *:nth-child(2) { animation-delay: 0.1s; }
+.stagger-children > *:nth-child(3) { animation-delay: 0.15s; }
+.stagger-children > *:nth-child(4) { animation-delay: 0.2s; }
+.stagger-children > *:nth-child(5) { animation-delay: 0.25s; }
+.stagger-children > *:nth-child(6) { animation-delay: 0.3s; }
+
+/* Number counter animation */
+.number-animate {
+  @apply transition-all duration-500 ease-out;
+}
+
+/* Shimmer loading effect */
+.shimmer {
+  @apply relative overflow-hidden;
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 0%,
+    hsl(var(--muted-foreground) / 0.1) 50%,
+    hsl(var(--muted)) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ============================================================================
+   Responsive Utils
+   ============================================================================ */
+@media (max-width: 768px) {
+  .stat-card:hover {
+    transform: none;
+  }
+
+  .grid-pattern {
+    background-size: 40px 40px;
+  }
+}
+
+/* Hide scrollbar but allow scrolling (for landscape navbar) */
+@layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;  /* Chrome, Safari, Opera */
+  }
+}
+
+/* ============================================================================
+   Log Viewer
+   ============================================================================ */
+.log-viewer {
+  @apply font-mono text-xs leading-relaxed;
+  @apply bg-background rounded-lg p-4 overflow-auto;
+  max-height: 500px;
+}
+
+.log-viewer .log-line {
+  @apply py-0.5;
+}
+
+.log-viewer .log-timestamp {
+  @apply text-muted-foreground mr-2;
+}
+
+.log-viewer .log-level-info {
+  @apply text-primary;
+}
+
+.log-viewer .log-level-warn {
+  color: hsl(var(--warning));
+}
+
+.log-viewer .log-level-error {
+  color: hsl(var(--loss));
+}
+
+/* ============================================================================
+   Code/Config Blocks
+   ============================================================================ */
+.config-block {
+  @apply font-mono text-sm;
+  @apply bg-muted/30 rounded-lg p-4 overflow-auto;
+}
+
+.config-key {
+  @apply text-primary;
+}
+
+.config-value {
+  @apply text-foreground;
+}
+
+.config-comment {
+  @apply text-muted-foreground italic;
+}
+
+/* ============================================================================
+   DipSway 2.0 — Gradient text, glass cards, glow borders
+   ============================================================================ */
+
+/* Gradient text — hero titles */
+.gradient-text {
+  @apply bg-clip-text text-transparent;
+  background-image: linear-gradient(to right, hsl(var(--primary)), hsl(var(--accent)));
+}
+
+/* Glass card — elevated surface with blur */
+.glass-card {
+  background: hsl(var(--card) / 0.6);
+  backdrop-filter: blur(16px);
+  border: 1px solid hsl(0 0% 100% / 0.07);
+  box-shadow:
+    0 4px 24px hsl(0 0% 0% / 0.3),
+    inset 0 1px 0 hsl(0 0% 100% / 0.05);
+}
+
+.glass-card:hover {
+  border-color: hsl(var(--primary) / 0.3);
+  box-shadow:
+    0 8px 32px hsl(0 0% 0% / 0.4),
+    0 0 0 1px hsl(var(--primary) / 0.1),
+    inset 0 1px 0 hsl(0 0% 100% / 0.08);
+}
+
+/* Gradient border wrapper */
+.gradient-border {
+  position: relative;
+  border-radius: 16px;
+  padding: 1px;
+  background: linear-gradient(135deg, hsl(var(--primary) / 0.4), hsl(var(--accent) / 0.1), hsl(var(--primary) / 0.4));
+}
+
+.gradient-border > .inner {
+  background: hsl(var(--background));
+  border-radius: 15px;
+}
+
+/* Glow button */
+.btn-glow {
+  @apply font-semibold px-8 py-3 rounded-xl transition-all duration-200;
+  background: linear-gradient(to right, hsl(var(--primary)), hsl(var(--accent)));
+  box-shadow: 0 0 30px hsl(var(--primary) / 0.4);
+}
+
+.btn-glow:hover {
+  box-shadow: 0 0 40px hsl(var(--primary) / 0.5);
+  transform: translateY(-1px);
+}
+
+/* Hero glow orbs */
+.hero-orb-primary {
+  position: absolute;
+  border-radius: 50%;
+  background: hsl(var(--primary) / 0.2);
+  filter: blur(120px);
+}
+
+.hero-orb-secondary {
+  position: absolute;
+  border-radius: 50%;
+  background: hsl(var(--accent) / 0.15);
+  filter: blur(80px);
+}

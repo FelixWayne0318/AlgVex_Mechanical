@@ -1,0 +1,33 @@
+#!/bin/bash
+# Pre-commit hook: Run logic sync checker before allowing commit.
+# Prevents committing code where SSoT logic clones are out of sync.
+#
+# Install:
+#   cp scripts/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+#   Or: setup.sh does this automatically
+#
+# Skip: git commit --no-verify (NOT recommended)
+
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+
+CHECKER="$PROJECT_ROOT/scripts/check_logic_sync.py"
+if [ ! -f "$CHECKER" ]; then
+    exit 0
+fi
+
+echo "🔗 Running logic sync check..."
+
+python3 "$CHECKER" 2>&1
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -ne 0 ]; then
+    echo ""
+    echo "❌ Logic sync check FAILED — commit blocked."
+    echo "   Fix the stale clones above, then try again."
+    echo "   Run: python3 scripts/check_logic_sync.py --verbose"
+    echo ""
+    exit 1
+fi
+
+echo "✅ Logic sync OK"
+exit 0

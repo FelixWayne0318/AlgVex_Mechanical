@@ -1,0 +1,32 @@
+[Unit]
+Description=Nautilus AlgVex SRP Strategy Bot
+After=network.target
+
+[Service]
+Type=simple
+User=linuxuser
+WorkingDirectory=/home/linuxuser/nautilus_AlgVex
+Environment="PATH=/home/linuxuser/nautilus_AlgVex/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="AUTO_CONFIRM=true"
+Environment="RUST_BACKTRACE=1"
+Environment="RUST_LOG=warn"
+EnvironmentFile=-/home/linuxuser/nautilus_AlgVex/.env
+
+ExecStart=/home/linuxuser/nautilus_AlgVex/venv/bin/python3 main_live.py --strategy srp --env production
+
+# Graceful shutdown
+KillSignal=SIGTERM
+TimeoutStopSec=30
+SuccessExitStatus=143
+
+# Auto-restart on failure
+Restart=on-failure
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nautilus-srp
+
+[Install]
+WantedBy=multi-user.target

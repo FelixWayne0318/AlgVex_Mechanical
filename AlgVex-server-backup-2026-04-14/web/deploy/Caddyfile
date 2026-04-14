@@ -1,0 +1,60 @@
+# Algvex - Caddy Configuration
+# Domain: algvex.com
+# Server: 139.180.157.152
+
+# Global options — ACME email for Let's Encrypt
+{
+    email admin@algvex.com
+}
+
+algvex.com {
+    # Security headers
+    header {
+        # Enable HTTP Strict Transport Security (HSTS)
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        # Prevent XSS attacks
+        X-XSS-Protection "1; mode=block"
+        # Prevent clickjacking
+        X-Frame-Options "DENY"
+        # Prevent MIME type sniffing
+        X-Content-Type-Options "nosniff"
+        # Referrer policy
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # Cache policy: static assets (content-hashed filenames) — cache 1 year
+    # HTML pages — no cache, always fetch fresh (prevents stale CSS/JS references)
+    header /_next/static/* Cache-Control "public, max-age=31536000, immutable"
+    header / Cache-Control "no-cache, no-store, must-revalidate"
+
+    # API routes -> FastAPI backend
+    handle /api/* {
+        reverse_proxy localhost:8000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # All other routes -> Next.js frontend
+    handle {
+        reverse_proxy localhost:3000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Logging
+    log {
+        output file /var/log/caddy/algvex.log
+        format json
+    }
+}
+
+# Redirect www to non-www
+www.algvex.com {
+    redir https://algvex.com{uri} permanent
+}

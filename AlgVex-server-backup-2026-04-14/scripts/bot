@@ -1,0 +1,103 @@
+#!/bin/bash
+# AlgVex 管理工具
+# 安装: sudo cp scripts/bot /usr/local/bin/bot && sudo chmod +x /usr/local/bin/bot
+# 用法: bot <command>
+
+set -e
+
+BRANCH="main"
+INSTALL_DIR="/home/linuxuser/nautilus_AlgVex"
+SERVICE_NAME="nautilus-trader"
+VENV_PYTHON="$INSTALL_DIR/venv/bin/python"
+
+# 颜色
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+case "$1" in
+    update|u)
+        echo -e "${GREEN}>> 更新代码并重启服务${NC}"
+        cd "$INSTALL_DIR"
+        git fetch origin "$BRANCH"
+        git reset --hard "origin/$BRANCH"
+        echo "最新提交: $(git log --oneline -1)"
+        sudo systemctl restart "$SERVICE_NAME"
+        sleep 2
+        sudo systemctl status "$SERVICE_NAME" --no-pager | head -10
+        ;;
+
+    status|s)
+        echo -e "${GREEN}>> 服务状态${NC}"
+        sudo systemctl status "$SERVICE_NAME" --no-pager
+        ;;
+
+    log|l)
+        echo -e "${GREEN}>> 实时日志 (Ctrl+C 退出)${NC}"
+        sudo journalctl -u "$SERVICE_NAME" -f --no-hostname
+        ;;
+
+    log50)
+        echo -e "${GREEN}>> 最近50行日志${NC}"
+        sudo journalctl -u "$SERVICE_NAME" -n 50 --no-hostname
+        ;;
+
+    restart|r)
+        echo -e "${GREEN}>> 重启服务${NC}"
+        sudo systemctl restart "$SERVICE_NAME"
+        sleep 2
+        sudo systemctl status "$SERVICE_NAME" --no-pager | head -10
+        ;;
+
+    stop)
+        echo -e "${YELLOW}>> 停止服务${NC}"
+        sudo systemctl stop "$SERVICE_NAME"
+        echo "服务已停止"
+        ;;
+
+    start)
+        echo -e "${GREEN}>> 启动服务${NC}"
+        sudo systemctl start "$SERVICE_NAME"
+        sleep 2
+        sudo systemctl status "$SERVICE_NAME" --no-pager | head -10
+        ;;
+
+    check|c)
+        echo -e "${GREEN}>> 运行健康检查${NC}"
+        cd "$INSTALL_DIR"
+        "$VENV_PYTHON" scripts/deep_health_check.py
+        ;;
+
+    shell)
+        echo -e "${GREEN}>> 进入项目目录并激活虚拟环境${NC}"
+        cd "$INSTALL_DIR"
+        source venv/bin/activate
+        exec bash
+        ;;
+
+    version|v)
+        cd "$INSTALL_DIR"
+        echo "分支: $(git branch --show-current)"
+        echo "提交: $(git log --oneline -1)"
+        echo "Python: $($VENV_PYTHON --version)"
+        ;;
+
+    *)
+        echo "AlgVex 管理工具"
+        echo ""
+        echo "用法: bot <command>"
+        echo ""
+        echo "命令:"
+        echo "  update, u    更新代码并重启服务"
+        echo "  status, s    查看服务状态"
+        echo "  log, l       实时查看日志"
+        echo "  log50        查看最近50行日志"
+        echo "  restart, r   重启服务"
+        echo "  stop         停止服务"
+        echo "  start        启动服务"
+        echo "  check, c     运行健康检查"
+        echo "  shell        进入项目并激活虚拟环境"
+        echo "  version, v   查看版本信息"
+        ;;
+esac

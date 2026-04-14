@@ -1,0 +1,102 @@
+# CodeQL 代码分析工作流
+#
+# 功能:
+# 1. 安全漏洞检测 (SQL注入、命令注入等)
+# 2. 数据流分析 (追踪变量传递)
+# 3. 代码质量检查
+#
+# 触发: 每周一 + 手动触发 (节省 Actions 分钟)
+
+name: CodeQL Analysis
+
+on:
+  schedule:
+    # 每周一凌晨运行一次完整扫描
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    name: CodeQL Analyze
+    runs-on: ubuntu-latest
+
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: python
+          # 使用扩展查询包 + 自定义查询
+          queries: +security-extended,security-and-quality,./.github/codeql/custom-queries
+
+      # CodeQL 自动构建 Python 项目 (无需手动构建)
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v4
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:python"
+          # 输出 SARIF 格式结果
+          output: codeql-results
+
+      - name: Upload SARIF results
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-sarif
+          path: codeql-results/*.sarif
+
+      - name: Generate Summary
+        run: |
+          echo "## 🔍 CodeQL Analysis Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "CodeQL has analyzed the Python codebase for:" >> $GITHUB_STEP_SUMMARY
+          echo "- Security vulnerabilities (SQL injection, command injection, etc.)" >> $GITHUB_STEP_SUMMARY
+          echo "- Data flow issues" >> $GITHUB_STEP_SUMMARY
+          echo "- Code quality problems" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "View detailed results in the **Security** tab of this repository." >> $GITHUB_STEP_SUMMARY
+
+      # 检查高严重性安全问题并阻断构建
+      - name: Check for high-severity issues
+        run: |
+          # 检查 SARIF 文件中是否有安全相关的高危问题
+          HIGH_COUNT=$(cat codeql-results/*.sarif | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          count = 0
+          critical_issues = []
+          for run in data.get('runs', []):
+              for result in run.get('results', []):
+                  level = result.get('level', '')
+                  rule_id = result.get('ruleId', '')
+                  # 检测安全相关的高危规则
+                  security_patterns = ['injection', 'credential', 'hardcoded', 'secret', 'password', 'xss', 'csrf']
+                  if level == 'error' or (level == 'warning' and any(p in rule_id.lower() for p in security_patterns)):
+                      count += 1
+                      msg = result.get('message', {}).get('text', '')[:100]
+                      critical_issues.append(f'{rule_id}: {msg}')
+          print(count)
+          if critical_issues:
+              print('---ISSUES---', file=sys.stderr)
+              for issue in critical_issues[:10]:
+                  print(issue, file=sys.stderr)
+          ")
+
+          echo "## 🔒 Security Check Results" >> $GITHUB_STEP_SUMMARY
+          if [ "$HIGH_COUNT" -gt 0 ]; then
+            echo "❌ Found $HIGH_COUNT high-severity security issues!" >> $GITHUB_STEP_SUMMARY
+            echo "Check **Security** tab for details." >> $GITHUB_STEP_SUMMARY
+            echo ""
+            echo "❌ Build blocked due to security issues. Please fix before merging."
+            exit 1
+          fi
+          echo "✅ No critical security issues found" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Security check passed"

@@ -1,0 +1,356 @@
+// SRP Strategy v5.0 — Virtual DCA + DD6% Stop (Production Optimal)
+// Backtested: 365d +14.31%, 5.42% MDD, PF 4.98, 90.7% WR, Ret/MDD 2.64
+//
+// Key parameters:
+//   SRP%=1.0, DCA spacing=3%, TP=2.5%, Stop Loss=6%, DCA mult=1.5, max DCA=4
+//
+// Based on TZack88 SRP_research.md, optimized via 14-config parameter sweep.
+
+//@version=5
+strategy("SRP v5.0 [AlgVex]",
+   overlay=true,
+   max_labels_count = 500,
+   pyramiding = 5,
+   default_qty_type = strategy.cash,
+   initial_capital = 1500,
+   commission_type = strategy.commission.percent,
+   commission_value = 0.075,
+   default_qty_value = 100,
+   margin_long = 10,
+   margin_short = 10
+   )
+
+// ============================================================================
+// Inputs
+// ============================================================================
+
+string g_srp = "📊 SRP Settings"
+float  ChangePercentage = input.float(1.0,   "SRP %",  group=g_srp, step=0.1, inline="srp")
+int    Length            = input.int(14,      "VWMA",   group=g_srp, inline="srp", tooltip="VWMA calculation period for SRP channel")
+float  below            = input.float(55,    "Long RSI-MFI <",  group=g_srp, tooltip="Long entry: RSI-MFI must be below this value")
+float  above            = input.float(100,   "Short RSI-MFI >", group=g_srp, tooltip="Short signal: RSI-MFI must be above this value")
+
+string g_strat = "⚙️ Strategy Settings"
+float  base_pct         = input.float(10,    "Base %",        group=g_strat, step=1,   inline="s1", tooltip="Base order size as % of current equity") / 100
+float  mintp            = input.float(2.5,   "TP %",          group=g_strat, step=0.1, inline="s1", tooltip="Take profit target based on virtual average price") / 100
+float  safety           = input.float(1.5,   "DCA Multi",     group=g_strat, step=0.1, inline="s2", tooltip="Each DCA multiplies position size by this value")
+int    sonum            = input.int(4,       "DCA Count",     group=g_strat, step=1,   inline="s2", tooltip="Maximum number of DCA orders (real entries)") + 1
+float  minSOchange      = input.float(3.0,   "DCA Spacing %", group=g_strat, step=0.1, inline="s3", tooltip="Price must drop this % from last entry to trigger next DCA")
+bool   DCATYPE          = input.string("Volume Multiply", "DCA Type", options=["Volume Multiply", "Base Multiply"], group=g_strat, inline="s3", tooltip="Volume: position × mult | Base: $base × mult^step") == "Volume Multiply"
+
+string g_safe = "🛡️ Safety Net"
+float  max_loss_pct     = input.float(6.0,   "Max Loss %",    group=g_safe, step=0.5, tooltip="Hard stop loss: close position if drawdown exceeds this %") / 100
+
+string g_date = "📅 Backtest Date"
+bool   limit_date_range = input.bool(true,   "Limit Range",   group=g_date, inline="dt")
+int    start_time       = input.time(defval=timestamp('01 Jan 2025 00:00 +0000'), title='Start', group=g_date)
+int    end_time         = input.time(defval=timestamp('31 Dec 2080 00:00 +0000'), title='End',   group=g_date)
+
+string g_vis = "🎨 Visuals"
+bool   showdeals        = input.bool(true,   "Deal lines",   group=g_vis, inline="v1")
+bool   showpnllabel     = input.bool(true,   "PNL labels",   group=g_vis, inline="v1")
+bool   show_table       = input.bool(true,   "Info table",   group=g_vis, inline="v1")
+string tbl_position     = input.string("Top Right", "📍 Table position", options=["Top Right","Top Left","Top Center","Bottom Right","Bottom Left","Bottom Center","Middle Right","Middle Left"], group=g_vis)
+color  profitcolor      = input.color(color.new(color.green, 85), "Profit zone", group=g_vis, inline="clr")
+color  dangercolor      = input.color(color.new(color.red, 85),   "Danger zone", group=g_vis, inline="clr")
+
+// ============================================================================
+// Indicators (original SRP)
+// ============================================================================
+
+bool in_date_range = limit_date_range ? (time >= start_time and time <= end_time) : true
+
+float core       = ta.vwma(hlc3, Length)
+float vwma_above = core * (1 + ChangePercentage / 100)
+float vwma_below = core * (1 - ChangePercentage / 100)
+
+float up   = ta.rma(math.max(ta.change(close), 0), 7)
+float down = ta.rma(-math.min(ta.change(close), 0), 7)
+float rsi  = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+float mf   = ta.mfi(hlc3, 7)
+float rsi_mfi = math.abs(rsi + mf / 2)
+
+bool long  = low <= vwma_below and (rsi_mfi < below)
+bool short = high >= vwma_above and (rsi_mfi > above)
+
+// ============================================================================
+// State
+// ============================================================================
+
+var int   socounter  = 0
+var int   dealcount  = 0
+
+// Deal base (recalculated from equity at each new deal)
+var float  deal_base = 0.0
+
+// Visual state (does not affect strategy logic)
+var string last_exit_type = ""
+var int    deal_start_time = 0
+
+// Virtual DCA tracking
+var float v_qty       = 0.0
+var float v_cost      = 0.0
+var float v_avg       = 0.0
+var float v_last_px   = 0.0
+var int   v_count     = 0
+
+// ============================================================================
+// DCA Helpers
+// ============================================================================
+
+calcNextSOprice(pcnt) =>
+    if strategy.position_size > 0
+        strategy.position_avg_price - (math.round(pcnt / 100 * strategy.position_avg_price / syminfo.mintick)) * syminfo.mintick
+    else
+        na
+
+calcChangeFromLastDeal() =>
+    if strategy.opentrades > 0
+        last_deal = strategy.opentrades.entry_price(strategy.opentrades - 1)
+        math.abs(((close - last_deal) / close) * 100)
+    else
+        0.0
+
+SOconditions() =>
+    calcChangeFromLastDeal() > minSOchange and close < calcNextSOprice(minSOchange)
+
+// Virtual DCA condition
+vSOconditions() =>
+    v_last_px > 0 and math.abs((close - v_last_px) / v_last_px) * 100 > minSOchange and close < v_last_px
+
+// TP target from virtual avg
+float tp_target = v_avg > 0 ? v_avg * (1 + mintp) : na
+
+// PNL label helper (from TZack88 original — shows PNL, duration, PNL% at exit)
+_make_pnl_label(exit_type) =>
+    if showpnllabel and strategy.position_size > 0
+        float pnl_val = (close - strategy.position_avg_price) * strategy.position_size
+        float pnl_pct = (close - strategy.position_avg_price) / strategy.position_avg_price * 100
+        int elapsed_sec = (time - deal_start_time) / 1000
+        string dur = elapsed_sec >= 86400 ? str.tostring(math.round(elapsed_sec / 86400.0, 1)) + "d" : elapsed_sec >= 3600 ? str.tostring(math.round(elapsed_sec / 3600.0, 1)) + "h" : str.tostring(math.round(elapsed_sec / 60.0, 0)) + "m"
+        string msg = exit_type + "\n" + "$" + str.tostring(math.round(pnl_val, 2)) + "  (" + str.tostring(math.round(pnl_pct, 2)) + "%)\n" + dur
+        color lbl_clr = pnl_val >= 0 ? color.new(color.green, 20) : color.new(color.red, 20)
+        label.new(bar_index, high * 1.001, msg, style=label.style_label_down, color=lbl_clr, textcolor=color.white, size=size.tiny)
+
+// ============================================================================
+// Safety Net (runs FIRST)
+// ============================================================================
+
+if strategy.position_size > 0 and strategy.position_avg_price > 0
+    float dd = (strategy.position_avg_price - close) / strategy.position_avg_price
+    if dd >= max_loss_pct
+        last_exit_type := "SL"
+        _make_pnl_label("SL")
+        strategy.close("LONG", comment="SL " + str.tostring(math.round(dd * 100, 1)) + "%")
+        v_qty := 0.0
+        v_cost := 0.0
+        v_avg := 0.0
+        v_last_px := 0.0
+        v_count := 0
+        socounter := 0
+
+// ============================================================================
+// Exit Logic
+// ============================================================================
+
+// Primary: price > virtual_avg × (1 + TP%)
+if strategy.position_size > 0 and v_avg > 0 and close > tp_target
+    last_exit_type := "TP"
+    _make_pnl_label("TP")
+    strategy.close("LONG", comment="TP v" + str.tostring(v_count))
+    v_qty := 0.0
+    v_cost := 0.0
+    v_avg := 0.0
+    v_last_px := 0.0
+    v_count := 0
+    socounter := 0
+
+// Backup: opposite band signal + in profit vs real avg
+else if strategy.position_size > 0 and short and close > strategy.position_avg_price
+    last_exit_type := "Band"
+    _make_pnl_label("Band")
+    strategy.close("LONG", comment="Band")
+    v_qty := 0.0
+    v_cost := 0.0
+    v_avg := 0.0
+    v_last_px := 0.0
+    v_count := 0
+    socounter := 0
+
+// ============================================================================
+// Virtual DCA (after real DCA exhausted)
+// ============================================================================
+
+if strategy.position_size > 0 and strategy.opentrades >= sonum and vSOconditions()
+    float vdca_qty = v_qty * safety
+    v_cost := v_cost + vdca_qty * close
+    v_qty := v_qty + vdca_qty
+    v_avg := v_cost / v_qty
+    v_last_px := close
+    v_count += 1
+
+// ============================================================================
+// Entry Logic (original SRP)
+// ============================================================================
+
+// New deal
+if long and strategy.opentrades == 0 and in_date_range
+    socounter := 0
+    dealcount += 1
+    deal_start_time := time
+    deal_base := strategy.equity * base_pct
+    float qty = deal_base / close
+    strategy.entry("LONG", strategy.long, qty=qty, comment="D#" + str.tostring(dealcount))
+    v_qty := qty
+    v_cost := qty * close
+    v_avg := close
+    v_last_px := close
+    v_count := 0
+
+// Real DCA (max 4)
+if long and SOconditions() and strategy.opentrades > 0 and strategy.opentrades < sonum and in_date_range
+    socounter += 1
+    float dca_qty = DCATYPE ? (strategy.position_size * safety) : (deal_base * math.pow(safety, socounter)) / close
+    strategy.entry("LONG", strategy.long, qty=dca_qty, comment="SO#" + str.tostring(socounter))
+    v_cost := v_cost + dca_qty * close
+    v_qty := v_qty + dca_qty
+    v_avg := v_cost / v_qty
+    v_last_px := close
+    v_count += 1
+
+// ============================================================================
+// Sync
+// ============================================================================
+
+if strategy.position_size == 0 and v_qty > 0
+    v_qty := 0.0
+    v_cost := 0.0
+    v_avg := 0.0
+    v_last_px := 0.0
+    v_count := 0
+    socounter := 0
+
+// ============================================================================
+// Visuals
+// ============================================================================
+
+// --- SRP Channel with fill ---
+p_upper = plot(vwma_above, "Upper Band", color.new(color.red, 40))
+p_core  = plot(core, "VWMA", color.new(color.gray, 60))
+p_lower = plot(vwma_below, "Lower Band", color.new(color.green, 40))
+fill(p_upper, p_lower, color=color.new(color.gray, 93), title="SRP Channel")
+
+// --- Position Lines + Zone Fills (inspired by TZack88 original) ---
+bool in_deal = strategy.position_size > 0 and showdeals
+
+// TP reference for fill: use real avg when v_avg unavailable (so fill always shows)
+float tp_fill_ref = in_deal ? (v_avg > 0 ? v_avg * (1 + mintp) : strategy.position_avg_price * (1 + mintp)) : na
+
+p_avg  = plot(in_deal ? strategy.position_avg_price : na,
+     "Avg Price", color.new(color.white, 10), style=plot.style_linebr, linewidth=1)
+// Virtual Avg: only show when v_avg > 0 (avoids $0 line from Sync reset)
+plot(in_deal and v_avg > 0 and v_avg < strategy.position_avg_price ? v_avg : na,
+     "Virtual Avg", color.new(color.aqua, 10), style=plot.style_linebr, linewidth=2)
+// TP Target: actual target line (only when v_avg > 0)
+p_tp   = plot(in_deal and v_avg > 0 ? v_avg * (1 + mintp) : na,
+     "TP Target", color.new(color.lime, 20), style=plot.style_linebr, linewidth=1)
+// TP reference line for fill (invisible, always present when in deal)
+p_tp_z = plot(tp_fill_ref, "TP Zone Ref", color.new(color.lime, 100), style=plot.style_linebr, display=display.none)
+// SL Line: orange to distinguish from upper band
+p_sl   = plot(in_deal ? strategy.position_avg_price * (1 - max_loss_pct) : na,
+     "Stop Loss", color.new(color.orange, 10), style=plot.style_linebr, linewidth=1)
+// Next DCA trigger level
+plot(in_deal and strategy.opentrades > 0 and strategy.opentrades < sonum ? calcNextSOprice(minSOchange) : na,
+     "Next DCA", color.new(color.yellow, 50), style=plot.style_linebr, linewidth=1)
+
+// Zone fills: profit zone (green) above avg, danger zone (red) below avg
+fill(p_tp_z, p_avg, color=profitcolor,  title="Profit Zone")
+fill(p_avg,  p_sl,  color=dangercolor, title="Danger Zone")
+
+// --- Entry Markers ---
+plotshape(long and strategy.opentrades == 0 and in_date_range,
+     "Base Entry", shape.triangleup, location.belowbar, color.green, size=size.small)
+plotshape(long and SOconditions() and strategy.opentrades > 0 and strategy.opentrades < sonum and in_date_range,
+     "DCA Entry", shape.triangleup, location.belowbar, color.new(color.aqua, 20), size=size.tiny)
+
+// --- Exit Markers ---
+bool just_closed = strategy.position_size == 0 and strategy.position_size[1] > 0
+plotshape(just_closed and last_exit_type == "TP",   "TP Exit",   shape.flag,   location.abovebar, color.lime,   size=size.tiny)
+plotshape(just_closed and last_exit_type == "Band", "Band Exit", shape.xcross, location.abovebar, color.yellow, size=size.tiny)
+plotshape(just_closed and last_exit_type == "SL",   "SL Exit",   shape.xcross, location.abovebar, color.red,    size=size.small)
+
+// --- Background ---
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 90) : na)
+
+// --- Info Table (position selectable, toggleable) ---
+_tbl_pos() =>
+    switch tbl_position
+        "Top Left"      => position.top_left
+        "Top Center"    => position.top_center
+        "Top Right"     => position.top_right
+        "Bottom Left"   => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Right"  => position.bottom_right
+        "Middle Left"   => position.middle_left
+        "Middle Right"  => position.middle_right
+
+// Required capital calculation (based on current equity × base_pct)
+_calc_required_capital() =>
+    float _base = strategy.equity * base_pct
+    float total = _base
+    for x = 1 to sonum - 1 by 1
+        total += _base * math.pow(safety, x)
+    total
+
+// Helper: add a table row (reduces repetition)
+_tbl_row(tbl, row, label_text, value_text, val_color) =>
+    table.cell(tbl, 0, row, label_text, text_color=color.yellow, text_size=size.small, bgcolor=color.new(color.gray, 85), text_halign=text.align_left)
+    table.cell(tbl, 1, row, value_text, text_color=val_color,    text_size=size.small, bgcolor=color.new(color.gray, 85), text_halign=text.align_right)
+
+var table tbl = table.new(_tbl_pos(), 2, 11, frame_color=color.new(color.gray, 50), frame_width=1, border_width=1)
+if barstate.islast and show_table
+    color c_val = color.white
+
+    // Row 0: Title (merged style with gradient)
+    color c_head = color.from_gradient(close, low, high, color.rgb(16, 194, 167), color.rgb(240, 141, 71))
+    table.cell(tbl, 0, 0, "SRP v5.0",  bgcolor=c_head, text_color=color.white,  text_size=size.normal, text_halign=text.align_left)
+    table.cell(tbl, 1, 0, "AlgVex",    bgcolor=c_head, text_color=color.yellow, text_size=size.normal, text_halign=text.align_right)
+
+    // Row 1: Config
+    string cfg = "SRP " + str.tostring(ChangePercentage, "#.#") + "% · DCA " + str.tostring(minSOchange, "#.#") + "% · SL " + str.tostring(max_loss_pct * 100, "#.#") + "%"
+    _tbl_row(tbl, 1, "Config", cfg, c_val)
+
+    // Row 2: DCA status
+    int dca_count = strategy.opentrades > 0 ? strategy.opentrades - 1 : 0
+    string dca_text = str.tostring(dca_count) + " / " + str.tostring(sonum - 1) + "  ×" + str.tostring(safety, "#.#")
+    _tbl_row(tbl, 2, "DCA", dca_text, dca_count > 0 ? color.aqua : c_val)
+
+    // Row 3: Virtual DCA
+    string v_text = v_avg > 0 and strategy.position_size > 0 ? "$" + str.tostring(math.round(v_avg, 1)) + "  (v" + str.tostring(v_count) + ")" : "—"
+    _tbl_row(tbl, 3, "Virtual", v_text, color.aqua)
+
+    // Row 4: TP Target
+    string tp_text = tp_target > 0 and strategy.position_size > 0 ? "$" + str.tostring(math.round(tp_target, 1)) + "  (+" + str.tostring(mintp * 100, "#.#") + "%)" : "—"
+    _tbl_row(tbl, 4, "TP Target", tp_text, color.lime)
+
+    // Row 5: Required Capital
+    _tbl_row(tbl, 5, "Capital", "$" + str.tostring(math.round(_calc_required_capital(), 0)), c_val)
+
+    // Row 6: Win Rate · Profit Factor
+    int total_t = strategy.wintrades + strategy.losstrades
+    float wr = total_t > 0 ? strategy.wintrades / total_t * 100 : 0
+    float pf = strategy.grossloss != 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : 0
+    _tbl_row(tbl, 6, "WR · PF", str.tostring(math.round(wr, 1)) + "%  ·  " + str.tostring(math.round(pf, 2)), c_val)
+
+    // Row 7: Deals
+    _tbl_row(tbl, 7, "Deals", str.tostring(dealcount), c_val)
+
+    // Row 8: Return %
+    float ret_pct = strategy.initial_capital > 0 ? strategy.netprofit / strategy.initial_capital * 100 : 0
+    _tbl_row(tbl, 8, "Return", str.tostring(math.round(ret_pct, 2)) + "%", ret_pct >= 0 ? color.green : color.red)
+
+    // Row 9: Open PnL
+    _tbl_row(tbl, 9, "Open PnL", "$" + str.tostring(math.round(strategy.openprofit, 2)), strategy.openprofit >= 0 ? color.green : color.red)
+
+    // Row 10: Net PnL
+    _tbl_row(tbl, 10, "Net PnL", "$" + str.tostring(math.round(strategy.netprofit, 2)), strategy.netprofit >= 0 ? color.green : color.red)

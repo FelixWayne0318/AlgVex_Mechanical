@@ -1,0 +1,757 @@
+# configs/base.yaml
+# AlgVex 配置文件 - 所有参数的完整定义
+# 此文件包含所有配置项的默认值，是配置的唯一来源
+# 版本: 3.0 (TradingAgents v3.6 完整数据覆盖)
+
+# =============================================================================
+# 交易配置
+# =============================================================================
+trading:
+  # 交易对配置
+  instrument_id: "BTCUSDT-PERP.BINANCE"
+  timeframe: "30m"                # 时间周期 (v18 Item 15: 15M→30M migration)
+  bar_type: "BTCUSDT-PERP.BINANCE-30-MINUTE-LAST-EXTERNAL"
+
+  # 数据获取
+  historical_bars_limit: 200      # 启动时获取的历史K线数量
+
+# =============================================================================
+# 交易逻辑常量 (来自 strategy/trading_logic.py)
+# =============================================================================
+trading_logic:
+  # Binance 交易限制
+  min_notional_usdt: 100.0        # Binance 最低名义价值 (不建议修改)
+  min_notional_safety_margin: 1.01  # 安全边际 1%
+
+  # 止损止盈默认值
+  # v6.3: min_sl_distance ATR-primary (自适应波动率, 取两者较大值)
+  min_sl_distance_atr: 2.0        # 最小止损距离 ATR 倍数 (primary gate)
+  min_sl_distance_pct: 0.003      # 最小止损距离 PCT floor (ATR=0 兜底; v6.3: 1%→0.3%)
+  min_tp_distance_pct: 0.005      # 最小止盈距离 0.5%
+  default_sl_pct: 0.02            # 默认止损 2%
+  default_tp_pct: 0.03            # 默认止盈 3%
+  min_rr_ratio: 1.3               # v40.0: 从 1.5 降为 1.3，与 tp_rr_target MED/LOW=1.3 对齐
+                                  # v10.0 原始: 1.5 → v40.0 tp_rr_target 降至 HIGH=1.5/MED=1.3/LOW=1.3
+                                  # 逆势: min_rr×ct_mult = 1.3×1.3 = 1.69:1 (仍高于顺势)
+  counter_trend_rr_multiplier: 1.3 # v5.12: 逆势交易 R/R 门槛倍数 (1.3 × 1.3 = 1.69:1，补偿较低胜率)
+
+  # v15.0: Emergency SL 配置 (原硬编码值提取)
+  emergency_sl:
+    base_pct: 0.02              # Emergency SL 最小距离 (2%)
+    atr_multiplier: 1.5         # 动态: max(base_pct, ATR × this)
+    cooldown_seconds: 120       # Emergency SL 重试冷却时间 (秒)
+    max_consecutive: 3          # 最大连续重试次数
+
+  # v11.0-simple: ATR-based mechanical SL/TP (Lopez de Prado Triple Barrier style)
+  # AI 只输出 confidence + risk_appetite，机械公式计算 SL/TP
+  # 学术依据: Lopez de Prado (2018) meta-labeling — 方向与风控模块分离
+  mechanical_sltp:
+    enabled: true                        # 启用机械 SL/TP (true=ATR 机械)
+    atr_source: "4h"                     # v39.0: Primary ATR source for SL/TP (4h=decision TF, 30m=fallback)
+    # SL 距离 = ATR × multiplier (按信心级别映射)
+    # v39.0: multiplier 基于 4H ATR (was 30M). 4H ATR ≈ 2.5-3× 30M ATR.
+    sl_atr_multiplier:
+      HIGH: 0.8                          # v39.0: 4H ATR × 0.8 (was 1.8× 30M, 等效 SL 放宽 ~17%)
+      MEDIUM: 1.0                        # v39.0: 4H ATR × 1.0 (was 2.2× 30M, 等效 SL 放宽 ~30%)
+      LOW: 1.0                           # v39.0: 同 MEDIUM (30% 仓位, 风险可控)
+    # TP 距离 = SL 距离 × rr_target (保证 R/R ≥ 目标)
+    tp_rr_target:
+      HIGH: 1.5                          # v40.0: was 2.0 (V40c 回测最优: 回撤 3.08%, TP 命中率提升)
+      MEDIUM: 1.5                        # v44.0: was 1.3 (87 信号回测: R/R 1.5 +15.33% vs 2.0 +9.82%, MFE 1.26% 支持更近 TP)
+      LOW: 1.5                           # v44.0: was 1.3 (同 MEDIUM, 30% 仓位, 回测 Plan B/J 均支持 1.5-1.8 区间)
+    # v11.0-simple: appetite_adjust 已删除 — risk_appetite 仅作用于仓位大小
+    # SL 距离由 confidence 唯一决定，不叠加 appetite 微调 (正交设计)
+    sl_atr_multiplier_floor: 0.5          # v39.0: 4H ATR floor (was 1.2 on 30M, 保底 0.5× 4H ATR)
+    counter_trend_sl_tighten: 1.0        # v11.0-simple: 禁用逆势 SL 收紧 (原 0.85 → 1.0 = 无效果)
+                                         # 仅 R/R×1.3 补偿逆势风险，不叠加 SL 收紧
+
+  # v11.0-simple: Time Barrier (Triple Barrier 第三层)
+  time_barrier:
+    enabled: true
+    max_holding_hours_trend: 12          # 顺势最大持仓 12 小时
+    max_holding_hours_counter: 6         # 逆势最大持仓 6 小时
+    action: "close"                      # 到期动作: 市价平仓 (不是移保本)
+
+  sl_only_favorable: true         # SL 只能向有利方向移动
+
+  # 按信心级别的止盈配置
+  tp_pct_by_confidence:
+    high: 0.03                    # 高信心: 3%
+    medium: 0.02                  # 中等信心: 2%
+    low: 0.01                     # 低信心: 1%
+
+  # 仓位精度调整
+  quantity_adjustment_step: 0.001 # BTC 仓位调整步长
+
+# =============================================================================
+# =============================================================================
+# 资金配置
+# =============================================================================
+capital:
+  equity: 1000                    # 备用资金值 (当无法获取真实余额时使用)
+  leverage: 10                    # 杠杆倍数 (10倍杠杆 + 低 ratio，最小单多层 DCA)
+  use_real_balance_as_equity: true  # 自动从 Binance 获取真实余额
+  max_leverage_limit: 125         # Binance USDM 绝对上限 (Telegram /set_leverage 验证)
+
+# =============================================================================
+# 仓位管理
+# =============================================================================
+position:
+  base_usdt_amount: 100           # 基础仓位 USDT (Binance 最低 $100)
+  high_confidence_multiplier: 1.5   # 高信心仓位乘数
+  medium_confidence_multiplier: 1.0 # 中等信心仓位乘数
+  low_confidence_multiplier: 0.5    # 低信心仓位乘数
+  max_position_ratio: 0.12        # 最大仓位比例 (10x杠杆下控制总仓位, max_usdt≈960)
+  trend_strength_multiplier: 1.2  # 趋势强度乘数
+  min_trade_amount: 0.001         # 最小交易量 (BTC)
+  adjustment_threshold: 0.001     # 仓位调整阈值 (BTC)
+
+# =============================================================================
+# 技术指标
+# =============================================================================
+indicators:
+  # SMA 配置
+  # 注意: 200 是 MTF 趋势层 (1D) 需要的，用于 RISK_ON/OFF 判断
+  sma_periods: [5, 20, 50, 200]
+
+  # EMA 配置
+  ema_periods: [12, 26]
+
+  # RSI 配置
+  rsi_period: 14
+
+  # MACD 配置
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+
+  # 布林带配置
+  bb_period: 20
+  bb_std: 2.0
+
+  # ADX (趋势强度) 配置
+  adx_period: 14
+
+  # 其他
+  volume_ma_period: 20
+  support_resistance_lookback: 20
+
+# =============================================================================
+# AI 配置
+# =============================================================================
+ai:
+  # DeepSeek 配置
+  deepseek:
+    api_key: ""                   # 从 .env 读取 (DEEPSEEK_API_KEY)
+    model: "deepseek-chat"
+    temperature: 0.3              # 注意: main_live.py 曾硬编码为 0.1
+    max_retries: 2
+    retry_delay: 1.0              # API 重试延迟
+    base_url: "https://api.deepseek.com"
+    thinking_enabled: false        # v32.0: Enable DeepSeek V3.2 thinking mode for deeper reasoning
+
+  # 多代理辩论配置
+  multi_agent:
+    debate_rounds: 2              # 辩论轮数 (1-3)
+    retry_delay: 1.0              # 重试延迟 (秒)
+    json_parse_max_retries: 2     # JSON 解析重试
+
+  # 信号处理
+  signal:
+    history_count: 30             # 信号历史队列大小 (原 maxlen=30)
+
+# =============================================================================
+# 情绪数据
+# =============================================================================
+sentiment:
+  enabled: true
+  provider: "binance"
+  lookback_hours: 4
+  timeframe: "30m"                # v18 Item 15: 15M→30M
+  weight: 0.30                    # 决策权重
+  timeout: 10                     # 请求超时 (秒)
+  update_interval_minutes: 15     # 更新间隔 (分钟)
+
+# =============================================================================
+# 风险管理
+# =============================================================================
+risk:
+  # 信心阈值
+  min_confidence_to_trade: "LOW"  # v38.1: 放行 LOW (回测 Plan B 正期望 +0.14%/笔, 30% 小仓位积累数据)
+  allow_reversals: true
+  require_high_confidence_for_reversal: false
+
+  # RSI 阈值 - 注意: main_live.py 曾硬编码为 75/25
+  rsi_extreme_threshold_upper: 70.0  # RSI 超买阈值
+  rsi_extreme_threshold_lower: 30.0  # RSI 超卖阈值
+  rsi_extreme_multiplier: 0.7
+
+  # 止损止盈
+  stop_loss:
+    enabled: true
+    use_support_resistance: false  # v11.0-simple: 禁用 — SL 由 ATR 机械公式计算
+    buffer_pct: 0.005             # 缓冲 0.5% (确认真正突破 S/R)
+
+  take_profit:
+    high_confidence_pct: 0.03     # 高信心: 3%
+    medium_confidence_pct: 0.02   # 中等信心: 2%
+    low_confidence_pct: 0.01      # 低信心: 1%
+
+  # OCO 订单
+  oco:
+    enabled: true                 # 控制孤儿订单清理
+
+
+  # ===== v6.0: 止损冷静期 (Post-Stop Cooldown) =====
+  # 参考: Freqtrade CooldownPeriod + StoplossGuard 分层冷却机制
+  # 防止止损后立即以相同逻辑重新入场 (死循环)
+  cooldown:
+    enabled: true
+    per_stoploss_candles: 2          # 单次 SL 后跳过 N 个分析周期 (2 × analysis_interval)
+    noise_stop_candles: 1            # 插针止损: 跳过 1 周期 — 价格在 1-2 根 K 线内回到 SL 上方
+    reversal_stop_candles: 6         # 趋势反转止损: 跳过 6 周期 (1.5 小时) — 价格继续远离 SL 超 1 ATR
+    volatility_stop_candles: 12      # 波动性止损: 跳过 12 周期 (3 小时) — ATR > 2× 正常值
+    detection_candles: 2             # 止损类型检测所需的 K 线数 (观察期)
+
+  # ===== 金字塔加仓 (Pyramiding) — 启用 (快速测试模式) =====
+  # 允许 AI 每个分析周期正常分析 + 同向加仓，加速策略验证
+  # 条件放宽以增加交易频率，适合小仓位 + 低杠杆测试
+  pyramiding:
+    enabled: true                    # 启用加仓
+    layer_sizes: [0.25, 0.22, 0.20, 0.20, 0.20, 0.20, 0.20]
+    min_profit_atr: 0.5             # 放宽: 浮盈 0.5×ATR 即可加仓 (原 1.0)
+    min_confidence: "MEDIUM"          # v42.1: HIGH→MEDIUM, 已有浮盈仓位用 MEDIUM 加仓风险可控
+    counter_trend_allowed: false
+    max_funding_rate: 0.0005         # 放宽: 0.05% (原 0.03%)
+    min_adx: 15                      # 放宽: ADX 15 即可 (原 25)
+
+  # ===== v3.12: 风险熔断控制 (Risk Circuit Breakers) =====
+  # 参考: Two Sigma / Citadel 机构级风控标准
+  circuit_breakers:
+    enabled: true
+
+    # 最大回撤控制
+    max_drawdown:
+      enabled: true
+      reduce_threshold_pct: 0.10    # 10% 回撤: 仓位减半
+      halt_threshold_pct: 0.15      # 15% 回撤: 停止交易
+      recovery_threshold_pct: 0.05  # 回撤恢复到 5% 后恢复交易
+
+    # 日亏损限制
+    daily_loss:
+      enabled: true
+      max_loss_pct: 0.03            # 单日最大亏损 3%
+      reset_hour_utc: 0             # UTC 0 点重置
+
+    # 连续亏损保护
+    consecutive_losses:
+      enabled: true
+      reduce_at_losses: 2           # v6.0: 连续 2 次亏损 → 仓位减半 (REDUCED 状态)
+      max_losses: 3                 # 连续 3 次亏损 → 完全冷却 (COOLDOWN 状态)
+      cooldown_hours: 4             # 冷却 4 小时
+      recovery_wins_needed: 1       # 需要 1 次盈利恢复
+
+    # 波动率熔断
+    volatility:
+      enabled: true
+      normal_atr_pct: 0.02          # 正常 ATR (2%)
+      halt_multiplier: 3.0          # ATR > 3x 正常值停止交易
+
+  # ===== v4.8: AI 控制仓位计算 =====
+  # 公式: 最终仓位 = max_usdt × AI建议百分比
+  # - max_usdt = equity × max_position_ratio × leverage
+  # - AI 根据信心程度建议仓位百分比 (0-100%)
+  # - 例: $1000 × 30% × 3杠杆 = $900 最大仓位
+  position_sizing:
+    method: "ai_controlled"         # fixed_pct | atr_based | kelly | hybrid_atr_ai | ai_controlled
+
+    # AI 控制模式参数 (v4.8 默认, v11.0-simple 扩展)
+    ai_controlled:
+      # AI 未提供仓位时的默认百分比
+      default_size_pct: 50          # 默认使用 50% 最大仓位
+      # 信心等级对应的仓位百分比
+      confidence_mapping:
+        HIGH: 80                    # 高信心: 80%
+        MEDIUM: 50                  # 中信心: 50%
+        LOW: 30                     # v38.1: 低信心: 30% (最保守仓位, 积累数据)
+      # v11.0-simple: risk_appetite → 仓位缩放 (唯一作用点, 不影响 SL/TP)
+      appetite_scale:
+        AGGRESSIVE: 1.0             # 激进: 100% (不调整)
+        NORMAL: 0.8                 # 标准: 80%
+        CONSERVATIVE: 0.5           # 保守: 50%
+
+    # v11.0-simple: 单笔最大风险 (position × SL_distance / entry ≤ 2% equity)
+    max_single_trade_risk_pct: 0.02
+
+    # ATR-Based 参数 (备用/参考)
+    atr_based:
+      risk_per_trade_pct: 0.02      # 每笔风险 2% of equity (提高)
+      atr_period: 14                # ATR 周期
+      atr_multiplier: 2.0           # 止损距离 = 2 × ATR
+
+    # v3.13: Hybrid ATR-AI (代码路径保留，需要时改 method: hybrid_atr_ai 激活)
+
+  # ===== v3.12: 扩展信号类型 =====
+  # LONG: 开多/加多
+  # SHORT: 开空/加空
+  # CLOSE: 平仓 (不开反向)
+  # HOLD: 观望
+  # REDUCE: 减仓 (保留方向)
+  signals:
+    valid_types: ["LONG", "SHORT", "CLOSE", "HOLD", "REDUCE"]
+    legacy_mapping:                 # 兼容旧信号
+      BUY: "LONG"
+      SELL: "SHORT"
+
+# =============================================================================
+# 网络配置
+# =============================================================================
+network:
+  # 合约发现重试
+  instrument_discovery:
+    max_retries: 60               # 最大重试次数
+    retry_interval: 1.0           # 重试间隔 (秒)
+
+  # Binance API
+  binance:
+    recv_window: 5000             # 接收窗口 (ms)
+    balance_cache_ttl: 5.0        # 余额缓存时间 (秒)
+    api_timeout: 10               # API 请求超时 (秒)
+
+  # K线数据持久化
+  bar_persistence:
+    max_limit: 1500               # Binance K线最大获取数量
+    timeout: 10                   # 请求超时 (秒)
+
+  # OCO 订单管理
+  oco_manager:
+    socket_timeout: 5             # WebSocket 超时 (秒)
+
+  # Telegram
+  telegram:
+    startup_delay: 5              # 启动延迟 (秒)
+    polling_max_retries: 3        # 轮询最大重试次数
+    polling_base_delay: 10        # 轮询重试基础延迟 (秒)
+    message_timeout: 5            # v2.0: 消息发送超时 (秒) - 降低到 5 秒减少阻塞
+    api_timeout: 30               # Command handler API timeout (connect/read/write) for polling startup
+
+# =============================================================================
+# Telegram 通知
+# =============================================================================
+telegram:
+  enabled: true
+  # bot_token 和 chat_id 从 .env 读取 (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+  bot_token: ""
+  chat_id: ""
+
+  # v14.0: 通知群 (公开信号推送，使用独立机器人)
+  # 从 .env 读取 (TELEGRAM_NOTIFICATION_BOT_TOKEN, TELEGRAM_NOTIFICATION_CHAT_ID)
+  notification_group:
+    enabled: true                 # 启用通知群推送
+    bot_token: ""                 # 通知群机器人 token
+    chat_id: ""                   # 通知群 chat_id
+    link: "https://t.me/AlgVex"  # 通知群邀请链接 (网站展示用)
+
+  # v14.0: 社区聊天群 (仅链接展示，无机器人交互)
+  community_group:
+    link: "https://t.me/AlgVex_Community"  # 社区群邀请链接 (网站展示用)
+
+  # 通知类型 (v3.13: 完善配置开关)
+  notify:
+    signals: true             # 交易信号通知
+    fills: true               # 订单成交通知
+    positions: true           # 持仓开仓/平仓通知
+    errors: true              # 错误警报
+    heartbeat: true           # v2.1: 每次 on_timer 运行发送心跳状态 (测试阶段推荐开启)
+    sltp_update: true         # v5.0: SL/TP 动态更新通知 (原 trailing_stop)
+    startup: true             # v3.13: 策略启动通知
+    shutdown: true            # v3.13: 策略关闭通知
+    daily_summary: true       # v3.13: 每日绩效总结 (已启用自动发送)
+    weekly_summary: true      # v3.13: 每周绩效总结 (已启用自动发送)
+
+  # v3.13: 定时总结配置
+  summary:
+    auto_daily: true               # 自动发送每日总结 (UTC 00:00)
+    auto_weekly: true              # 自动发送每周总结 (周一 UTC 00:00)
+    daily_hour_utc: 0              # 每日总结发送时间 (UTC 小时)
+    weekly_day: 0                  # 每周总结发送日 (0=周一, 6=周日)
+
+  # v2.0: 消息队列配置 (异步非阻塞发送)
+  queue:
+    enabled: true                 # 启用异步消息队列 (推荐)
+    db_path: "data/telegram_queue.db"  # SQLite 持久化路径
+    max_retries: 3                # 失败消息最大重试次数
+    alert_cooldown: 300           # 告警收敛冷却时间 (秒)
+    send_interval: 0.5            # 发送间隔 (秒，防止速率限制)
+
+  # v2.0: 安全配置
+  security:
+    enable_pin: true              # 控制命令需要 PIN 验证 (pause/resume/close)
+    pin_code: ""                  # 固定 PIN 码 (空 = 每次随机生成)
+    pin_expiry_seconds: 60        # PIN 有效期 (秒)
+    rate_limit_per_minute: 30     # 每分钟最大命令数
+    enable_audit: true            # 启用审计日志
+    audit_log_dir: "logs/audit"   # 审计日志目录
+
+# =============================================================================
+# 执行配置
+# =============================================================================
+execution:
+  order_type: "MARKET"
+  time_in_force: "GTC"
+  reduce_only_for_closes: true
+  position_adjustment_threshold: 0.001  # Min 0.001 BTC difference to adjust
+
+  # NautilusTrader 执行引擎配置 (原 main_live.py 硬编码)
+  engine:
+    reconciliation: true                  # 仓位对账
+    inflight_check_interval_ms: 5000      # 在途订单检查间隔 (ms)
+    filter_position_reports: true         # 过滤持仓报告
+    filter_unclaimed_external_orders: true # 过滤未认领的外部订单
+
+# =============================================================================
+# 定时器配置
+# =============================================================================
+timing:
+  timer_interval_sec: 1800        # 分析间隔 (秒)，30分钟 (生产环境覆盖为 1200s/20分钟)
+  price_cache_ttl_seconds: 300    # 价格缓存最大有效期 (5 分钟)
+  reversal_timeout_seconds: 300   # 反转 Phase 1→Phase 2 最大等待时间 (5 分钟)
+
+# =============================================================================
+# 日志配置
+# =============================================================================
+logging:
+  level: "INFO"
+  to_file: true
+  file: "logs/ai_strategy.log"
+  log_signals: true
+  log_positions: true
+  log_ai_responses: true
+
+# =============================================================================
+# 诊断工具阈值 (diagnose_realtime.py 使用)
+# =============================================================================
+diagnostics:
+  # 布林带阈值
+  bb_overbought_threshold: 80       # BB% 超买阈值
+  bb_oversold_threshold: 20         # BB% 超卖阈值
+
+  # 多空比阈值
+  ls_ratio_extreme_bullish: 2.0     # 极度看多阈值
+  ls_ratio_bullish: 1.5             # 看多阈值
+  ls_ratio_extreme_bearish: 0.5     # 极度看空阈值
+  ls_ratio_bearish: 0.7             # 看空阈值
+
+  # MACD 阈值
+  macd_strong_signal_threshold: 50  # 强信号阈值
+
+  # 成交量阈值
+  volume_spike_multiplier: 2.0      # 成交量突增倍数
+
+# =============================================================================
+# 运行时控制 (从环境变量读取)
+# =============================================================================
+runtime:
+  test_mode: false      # 测试模式 (从 TEST_MODE 环境变量读取)
+  auto_confirm: false   # 自动确认 (从 AUTO_CONFIRM 环境变量读取)
+
+# =============================================================================
+# Binance API 配置 (敏感信息从 .env 读取)
+# =============================================================================
+binance:
+  # api_key 和 api_secret 从 .env 读取 (BINANCE_API_KEY, BINANCE_API_SECRET)
+  # testnet_api_key 和 testnet_api_secret 从 .env 读取 (可选)
+  # 注意: 以下字段会被 ConfigManager 从环境变量动态填充
+  api_key: ""
+  api_secret: ""
+  testnet_api_key: ""
+  testnet_api_secret: ""
+
+# =============================================================================
+# 多时间框架配置 (Multi-Timeframe Framework) v3.2
+# =============================================================================
+multi_timeframe:
+  enabled: true                       # 启用三层 MTF 框架 (1D/4H/15M)
+
+  # ---------------------------------------------------------------------------
+  # 趋势层配置 (1D) - 提供趋势数据给 AI 分析
+  # v3.3: 移除本地过滤逻辑，所有决策交由 AI
+  # ---------------------------------------------------------------------------
+  trend_layer:
+    timeframe: "1d"
+    sma_period: 200                   # SMA_200 判断长期趋势 (数据给 AI)
+    cache_ttl_hours: 4                # 趋势状态缓存时间
+
+  # ---------------------------------------------------------------------------
+  # 决策层配置 (4H) - Bull/Bear 辩论决定方向
+  # ---------------------------------------------------------------------------
+  decision_layer:
+    timeframe: "4h"
+    debate_rounds: 2                  # TradingAgents 辩论轮数
+    include_trend_context: true       # 在辩论中包含趋势层信息
+    indicators:
+      sma_periods: [20, 50]
+      rsi_period: 14
+      macd_fast: 12
+      macd_slow: 26
+      bb_period: 20
+      bb_std: 2.0
+
+  # ---------------------------------------------------------------------------
+  # 执行层配置 (5M / 30M) - 提供执行层数据给 AI (v18.2: 15M→30M)
+  # v3.3: 移除本地 RSI 过滤，所有入场决策交由 AI
+  # ---------------------------------------------------------------------------
+  execution_layer:
+    default_timeframe: "30m"          # 默认执行周期 (v18 Item 15: 15M→30M)
+    high_volatility_timeframe: "5m"   # 高波动时使用 5M
+    indicators:
+      sma_periods: [5, 20]
+      ema_periods: [10]
+      rsi_period: 14
+      support_resistance_lookback: 20
+
+  # ---------------------------------------------------------------------------
+  # 初始化配置 (request_bars 预取)
+  # ---------------------------------------------------------------------------
+  initialization:
+    trend_min_bars: 220               # 趋势层最少 bar 数量 (SMA_200 + 缓冲)
+    decision_min_bars: 60             # 决策层最少 bar 数量 (SMA_50 + 缓冲)
+    execution_min_bars: 40            # 执行层最少 bar 数量
+    request_timeout_sec: 300          # 请求超时 (秒)
+    max_retry_attempts: 3             # 最大重试次数
+
+# =============================================================================
+# Binance 衍生品配置 (v3.7)
+# =============================================================================
+binance_derivatives:
+  trend_calculation:
+    threshold_pct: 5.0                # 趋势判断阈值 (% 变化)
+
+# =============================================================================
+# 订单流数据配置 (Order Flow) v3.2
+# =============================================================================
+order_flow:
+  enabled: true                       # 启用订单流数据增强
+
+  # ---------------------------------------------------------------------------
+  # Binance K线完整字段
+  # ---------------------------------------------------------------------------
+  binance:
+    use_taker_data: true              # 使用 taker_buy_volume (列[9])
+    use_quote_volume: true            # 使用 quote_volume (列[7])
+    use_trades_count: true            # 使用 trades_count (列[8])
+    bars_for_analysis: 10             # 分析最近 N 根 K线
+
+  # ---------------------------------------------------------------------------
+  # Coinalyze 衍生品数据 (需要 API Key)
+  # ---------------------------------------------------------------------------
+  coinalyze:
+    enabled: true                     # 启用 Coinalyze 数据
+    api_key: ""                       # 从 ~/.env.algvex 的 COINALYZE_API_KEY 读取
+    timeout: 10                       # API 请求超时 (秒)
+    symbol: "BTCUSDT_PERP.A"          # Coinalyze Symbol 格式 (A=Binance)
+    endpoints:
+      open_interest: true
+      liquidations: true
+      funding_rate: true
+    # 降级策略: API 失败时使用默认值
+    fallback_enabled: true
+    fallback_oi_usd: 0
+    fallback_funding_rate: 0
+
+    # ===== v3.7: Funding Rate 数据源配置 =====
+    # ⚠️ 重要: 资金费率统一使用 Binance 8 小时资金费率
+    # Binance 合约每 8 小时结算一次 (00:00, 08:00, 16:00 UTC)
+    # Coinalyze 数据是多交易所聚合值，可能与 Binance 实际费率差异较大
+    funding_rate:
+      prefer_binance_when_divergent: true   # 差异大时使用 Binance
+      max_divergence_ratio: 10.0            # 差异超过 10x 视为异常
+      always_use_binance: true              # ✅ 始终使用 Binance 8h 资金费率 (v3.8 默认)
+
+  # ---------------------------------------------------------------------------
+  # 买卖比阈值
+  # ---------------------------------------------------------------------------
+  buy_ratio:
+    bullish_threshold: 0.55           # >55% 视为多头主导
+    bearish_threshold: 0.45           # <45% 视为空头主导
+    trend_threshold: 0.01             # 趋势判断阈值 (前5根 vs 后5根差值)
+
+  # ---------------------------------------------------------------------------
+  # Prompt 配置
+  # ---------------------------------------------------------------------------
+  prompt:
+    version: "optimized"              # "optimized" (~600 tokens) 或 "full" (~1800 tokens)
+    include_interpretation_guide: true # 在 Prompt 中包含解读指南
+    weights:                          # 各数据权重 (供 AI 参考)
+      order_flow: 0.30
+      technical: 0.25
+      derivatives: 0.25
+      sentiment: 0.20
+
+# =============================================================================
+# S/R Zone 配置 (Support/Resistance Zone Calculator) v3.0
+# =============================================================================
+sr_zones:
+  enabled: true                         # 启用 S/R Zone 计算
+  cache_ttl_seconds: 1800               # S/R zones 缓存有效期 (30 分钟)
+
+  # ---------------------------------------------------------------------------
+  # Swing Point 检测 (Williams Fractal / N-bar Pivot)
+  # 参考: Chan (2022, MDPI) - swing points 改善 ML S/R 盈利能力 +65%
+  # ---------------------------------------------------------------------------
+  swing_detection:
+    enabled: true                       # 启用 Swing Point 检测
+    left_bars: 5                        # 左侧 N 根 bar (确认 swing)
+    right_bars: 5                       # 右侧 N 根 bar (确认 swing)
+    weight: 1.2                         # Swing Point 权重 (介于 BB=1.0 和 SMA_200=1.5 之间)
+    max_swing_age: 100                  # 最大回看 bar 数 (15M bar × 100 = 25 小时)
+
+  # ---------------------------------------------------------------------------
+  # 聚类配置 (将候选价位合并为 Zone)
+  # ---------------------------------------------------------------------------
+  clustering:
+    method: "distance"                  # 聚类方法: distance (当前唯一支持)
+    cluster_pct: 0.5                    # 固定聚类阈值 (价差 < 0.5% 合并)
+    use_atr_adaptive: true              # 启用 ATR 自适应聚类阈值
+    atr_cluster_multiplier: 0.5         # ATR 聚类乘数 (cluster_threshold = ATR × multiplier)
+
+  # ---------------------------------------------------------------------------
+  # Touch Count 评分
+  # 参考: Osler (2000, FRB NY) - 2-3 次触碰是 S/R 最佳强度
+  # ---------------------------------------------------------------------------
+  scoring:
+    touch_count_enabled: true           # 启用 Touch Count 评分
+    touch_threshold_atr: 0.3            # 触碰判定距离 = ATR × 0.3
+    optimal_touches: [2, 3]             # 最优触碰次数 (权重加成 +0.5)
+    decay_after_touches: 4              # 超过此次数后权重开始衰减
+
+  # ---------------------------------------------------------------------------
+  # Zone 通用配置
+  # ---------------------------------------------------------------------------
+  zone_expand_pct: 0.1                  # Zone 边界扩展 (上下各 0.1%)
+
+  # ---------------------------------------------------------------------------
+  # v4.0: 投射层 (Pivot Points — 数学投射，ATH 时提供上方阻力)
+  # ---------------------------------------------------------------------------
+  pivots:
+    enabled: true                       # 启用 Pivot Point 投射
+    daily: true                         # 日线 Pivot
+    weekly: true                        # 周线 Pivot
+    projected_max_strength: "MEDIUM"    # PROJECTED 类型 zone 强度上限
+
+  # ---------------------------------------------------------------------------
+  # v4.0: Volume Profile (确认层 — 独立于检测层的微观结构确认)
+  # ---------------------------------------------------------------------------
+  volume_profile:
+    enabled: true                       # 启用 Volume Profile
+    bars_source: "30m"                  # 数据源时间框架 (v18.2: 15M→30M)
+    lookback_bars: 48                   # 回看 bar 数 (48 × 30min = 24h)
+    value_area_pct: 70                  # Value Area 百分比 (标准 TPO 70%)
+    min_bins: 30                        # 最小价格分区数
+    max_bins: 80                        # 最大价格分区数
+
+  # ---------------------------------------------------------------------------
+  # v4.0: Round Number 配置
+  # ---------------------------------------------------------------------------
+  round_number:
+    btc_step: 5000                      # BTC 心理关口步长 ($5k: Osler 2003)
+    count: 3                            # 上下各生成 N 个关口
+
+  # ---------------------------------------------------------------------------
+  # v4.0: 聚合规则 (同源封顶 + 多源奖励 + 总权重上限)
+  # ---------------------------------------------------------------------------
+  aggregation:
+    same_data_weight_cap: 2.5           # 同源候选权重和上限 (防止单一数据源主导)
+    max_zone_weight: 6.0                # Zone 总权重上限
+    confluence_bonus_2_sources: 0.2     # 2 种来源类型交汇奖励
+    confluence_bonus_3_sources: 0.5     # 3+ 种来源类型交汇奖励
+
+  # ---------------------------------------------------------------------------
+  # v8.0: Hold Probability & Path Obstacle Checking
+  # 评估 zone 维持概率 + TP 路径障碍检查
+  # 学术依据: Chung & Bellotti (2021), Cont et al. (2014), Spitsin (2025)
+  # ---------------------------------------------------------------------------
+  hold_probability:
+    enabled: true                         # 启用 hold_probability 计算 (每个 zone 附带维持概率)
+    # v8.1 实时修正因子 (Phase 3)
+    realtime_correction: true             # 启用 momentum/OBI/volume 实时修正
+    # momentum_factor: RSI + MACD 方向修正 (0.70-1.20)
+    # obi_factor: 订单簿失衡修正 (0.75-1.25)
+    # velocity_factor: 成交量速度修正 (0.80-1.20)
+
+  # ---------------------------------------------------------------------------
+  # 硬风控 (默认禁用，由 AI 自主决策)
+  # 参考: v3.16 TradingAgents Autonomy - AI 应完全自主决策
+  # ---------------------------------------------------------------------------
+  hard_control:
+    enabled: false                      # 启用本地硬风控覆盖 (默认关闭)
+    threshold_pct: 1.0                  # 硬风控触发阈值 (距离 < 1%) — fixed 模式使用
+    threshold_mode: "atr"               # "fixed" = 固定百分比, "atr" = ATR 自适应
+    atr_multiplier: 0.5                 # ATR 模式: zone_distance < ATR/price*100 * multiplier → block
+    atr_min_pct: 0.3                    # ATR 模式下限 (防止低波动时阈值太小)
+    atr_max_pct: 2.0                    # ATR 模式上限 (防止高波动时阈值太大)
+
+# =============================================================================
+# 订单簿深度配置 (Order Book Depth) v2.0 - v3.7 新增
+# =============================================================================
+order_book:
+  enabled: true                       # 启用订单簿数据 (v3.7 已测试通过)
+
+  # ---------------------------------------------------------------------------
+  # API 配置
+  # ---------------------------------------------------------------------------
+  api:
+    endpoint: "/fapi/v1/depth"
+    limit: 100                        # 深度档位数 (5, 10, 20, 50, 100, 500, 1000)
+    timeout: 10                       # 请求超时 (秒)
+    max_retries: 2                    # 最大重试次数
+    retry_delay: 1.0                  # 重试延迟 (秒)
+
+  # ---------------------------------------------------------------------------
+  # 处理配置 (v2.0 更新)
+  # ---------------------------------------------------------------------------
+  processing:
+    price_band_pct: 0.5               # 价格带宽度百分比
+
+    # v2.0: 加权 OBI 可配置化
+    weighted_obi:
+      base_decay: 0.8                 # 基础衰减因子
+      adaptive: true                  # 启用自适应衰减 (基于波动率)
+      volatility_factor: 0.1          # 波动率影响因子
+      min_decay: 0.5                  # 最小衰减 (高波动时)
+      max_decay: 0.95                 # 最大衰减 (低波动时)
+
+    # v2.0: 动态异常阈值
+    anomaly_detection:
+      base_threshold: 3.0             # 基础阈值 (倍数)
+      dynamic: true                   # 启用动态调整
+      min_threshold: 2.0              # 最小阈值
+      max_threshold: 5.0              # 最大阈值
+
+    # 滑点估算
+    slippage_amounts:
+      - 0.1                           # 0.1 BTC
+      - 0.5                           # 0.5 BTC
+      - 1.0                           # 1.0 BTC
+
+    # v2.0: 历史缓存 (用于变化率计算)
+    history:
+      size: 10                        # 缓存最近 N 次快照
+      min_samples_for_trend: 3        # 计算趋势需要的最小样本数
+
+  # ---------------------------------------------------------------------------
+  # 缓存配置
+  # ---------------------------------------------------------------------------
+  cache:
+    enabled: true                     # 启用缓存
+    ttl_seconds: 5                    # 缓存生存时间
+
+  # ---------------------------------------------------------------------------
+  # v2.0: 降级配置 (优化)
+  # ---------------------------------------------------------------------------
+  fallback:
+    enabled: true
+    # 注意: 不再使用 default_obi = 0.0
+    # 而是返回明确的 NO_DATA 状态
+    return_no_data_status: true       # 返回 NO_DATA 而非中性值
+    default_spread_pct: 0.05          # 仅在格式化时使用

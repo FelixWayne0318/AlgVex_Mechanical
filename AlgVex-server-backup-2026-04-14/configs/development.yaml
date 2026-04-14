@@ -1,0 +1,42 @@
+# configs/development.yaml
+# 开发/测试环境配置覆盖
+#
+# 使用方法: python3 main_live.py --env development
+#
+# 与 production.yaml 的主要区别:
+# - 1分钟K线 (快速测试)
+# - 短周期技术指标 (适配1分钟数据)
+# - DEBUG 日志级别
+# - 低杠杆 (降低测试风险)
+
+trading:
+  timeframe: "1m"                                              # 1分钟K线
+  bar_type: "BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL"
+
+capital:
+  leverage: 3                     # 测试用低杠杆
+
+# 1分钟K线专用指标参数 (短周期，适配快速数据)
+# 这些值会覆盖 base.yaml 中的默认值
+indicators:
+  sma_periods: [3, 7, 15]         # 短周期SMA (base: [5, 20, 50])
+  rsi_period: 7                   # 短周期RSI (base: 14)
+  macd_fast: 5                    # 短周期MACD快线 (base: 12)
+  macd_slow: 10                   # 短周期MACD慢线 (base: 26)
+  bb_period: 10                   # 短周期布林带 (base: 20)
+  volume_ma_period: 10            # 短周期成交量MA (base: 20)
+  support_resistance_lookback: 10 # 短周期支撑阻力 (base: 20)
+
+timing:
+  timer_interval_sec: 60          # 1分钟分析间隔
+
+logging:
+  level: "DEBUG"
+
+# v6.0: 开发环境仓位管理 (快速测试)
+risk:
+  cooldown:
+    per_stoploss_candles: 1       # 1 candle cooldown (1分钟，快速测试)
+    noise_stop_candles: 1
+    reversal_stop_candles: 2
+    volatility_stop_candles: 3

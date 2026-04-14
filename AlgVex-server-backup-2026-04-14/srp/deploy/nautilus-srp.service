@@ -1,0 +1,23 @@
+[Unit]
+Description=AlgVex SRP v6.1 Trading Strategy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=linuxuser
+WorkingDirectory=/home/linuxuser/nautilus_AlgVex
+Environment=HOME=/home/linuxuser
+EnvironmentFile=/home/linuxuser/.env.algvex
+ExecStart=/home/linuxuser/nautilus_AlgVex/venv/bin/python3 main_live.py --strategy srp --env production
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits
+LimitNOFILE=65535
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
