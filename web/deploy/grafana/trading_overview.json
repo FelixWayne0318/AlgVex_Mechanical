@@ -1,0 +1,74 @@
+{
+  "dashboard": {
+    "title": "AlgVex Trading Overview",
+    "uid": "algvex-trading",
+    "panels": [
+      {
+        "title": "Equity (USD)",
+        "type": "stat",
+        "targets": [{"expr": "algvex_equity_usd"}],
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0}
+      },
+      {
+        "title": "Drawdown %",
+        "type": "gauge",
+        "targets": [{"expr": "algvex_drawdown_pct"}],
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0}
+      },
+      {
+        "title": "Win Rate",
+        "type": "stat",
+        "targets": [{"expr": "algvex_win_rate"}],
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0}
+      },
+      {
+        "title": "Fear & Greed Index",
+        "type": "gauge",
+        "targets": [{"expr": "algvex_fear_greed_index"}],
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0}
+      },
+      {
+        "title": "Trades Total",
+        "type": "stat",
+        "targets": [{"expr": "algvex_trades_total"}],
+        "gridPos": {"h": 4, "w": 8, "x": 0, "y": 4}
+      },
+      {
+        "title": "AI Quality Score",
+        "type": "gauge",
+        "targets": [{"expr": "algvex_ai_quality_score"}],
+        "gridPos": {"h": 4, "w": 8, "x": 8, "y": 4}
+      },
+      {
+        "title": "Market Regime",
+        "type": "stat",
+        "targets": [{"expr": "algvex_market_regime"}],
+        "gridPos": {"h": 4, "w": 8, "x": 16, "y": 4}
+      },
+      {
+        "title": "Trade PnL Distribution",
+        "type": "histogram",
+        "targets": [{"expr": "algvex_trade_pnl_pct_bucket"}],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+      },
+      {
+        "title": "AI Call Duration",
+        "type": "graph",
+        "targets": [{"expr": "rate(algvex_ai_call_duration_seconds_sum[5m]) / rate(algvex_ai_call_duration_seconds_count[5m])"}],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+      },
+      {
+        "title": "Signals Generated",
+        "type": "graph",
+        "targets": [
+          {"expr": "algvex_signals_total{signal=\"LONG\"}", "legendFormat": "LONG"},
+          {"expr": "algvex_signals_total{signal=\"SHORT\"}", "legendFormat": "SHORT"},
+          {"expr": "algvex_signals_total{signal=\"HOLD\"}", "legendFormat": "HOLD"}
+        ],
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16}
+      }
+    ],
+    "time": {"from": "now-24h", "to": "now"},
+    "refresh": "30s"
+  }
+}

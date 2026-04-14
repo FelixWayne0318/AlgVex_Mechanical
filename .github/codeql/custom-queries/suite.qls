@@ -1,0 +1,9 @@
+# AlgVex Custom Query Suite
+# Includes all project-specific CodeQL queries
+
+- description: AlgVex security and quality queries
+- queries: .
+- include:
+    kind:
+      - problem
+      - path-problem

@@ -1,0 +1,78 @@
+name: Claude Code
+
+on:
+  issue_comment:
+    types: [created, edited]
+  pull_request_review_comment:
+    types: [created, edited]
+  issues:
+    types: [opened, assigned]
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  # =========================================================================
+  # Job 1: Claude Code Action (@claude mentions in issues/PRs)
+  # =========================================================================
+  claude:
+    # Prevent bot from triggering itself
+    if: |
+      github.actor != 'claude[bot]' && (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'issues' && contains(github.event.issue.body, '@claude'))
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # Read/write code
+      pull-requests: write     # Manage PRs
+      issues: write            # Manage Issues
+      actions: read            # Read Actions logs
+      id-token: write          # OIDC auth
+      security-events: read    # Read Code Scanning alerts
+      checks: write            # Update CI check status
+      statuses: write          # Update commit status
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        env:
+          GH_TOKEN: ${{ secrets.CODE_SCANNING_PAT || secrets.GITHUB_TOKEN }}
+
+  # =========================================================================
+  # Job 2: Automated Code Review (on PR open/update)
+  # Multi-agent review reads CLAUDE.md + REVIEW.md for project-specific rules
+  # =========================================================================
+  code-review:
+    if: |
+      github.event_name == 'pull_request' &&
+      github.actor != 'claude[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write          # OIDC auth for OAuth token exchange
+      checks: write
+      statuses: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          review_enabled: true
+          # Review on every push to PR (auto-resolves fixed issues)
+          review_trigger: "after_every_push"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,6 @@
+name: algvex/queries
+version: 1.2.0
+description: Custom CodeQL queries for AlgVex project
+dependencies:
+  codeql/python-all: "*"
+defaultSuiteFile: suite.qls

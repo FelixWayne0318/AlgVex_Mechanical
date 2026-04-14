@@ -1,0 +1,18 @@
+# configs/backtest.yaml
+# 回测环境配置覆盖
+
+capital:
+  equity: 10000                   # 回测起始资金
+  leverage: 5
+  use_real_balance_as_equity: false  # 回测使用固定资金
+
+telegram:
+  enabled: false                  # 回测时禁用 Telegram 通知
+
+logging:
+  level: "INFO"
+
+# v6.0: 回测环境仓位管理 (简化，减少变量)
+risk:
+  pyramiding:
+    enabled: false                # 回测时禁用金字塔 (单层分析更清晰)

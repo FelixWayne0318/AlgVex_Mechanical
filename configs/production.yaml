@@ -1,0 +1,23 @@
+# configs/production.yaml
+# 生产环境配置覆盖
+
+capital:
+  leverage: 10                    # 生产环境杠杆 (10x + ratio=12%, 最小单多层DCA测试)
+
+timing:
+  timer_interval_sec: 1200        # 20分钟
+
+logging:
+  level: "INFO"
+
+network:
+  instrument_discovery:
+    max_retries: 180              # 增加到 180 秒 (3 分钟)
+    retry_interval: 1.0
+
+# v6.0: 生产环境仓位管理 (使用 base.yaml 默认值即可，此处仅供参考)
+# risk:
+#   cooldown:
+#     enabled: true               # 止损后冷静期
+#   pyramiding:
+#     enabled: true               # 金字塔加仓
