@@ -52,7 +52,7 @@ quantstats>=0.0.62              # KPI baseline (Sharpe/Calmar/Monte Carlo)
 # Phase 1 — Code hardening
 tenacity>=9.0.0                 # REST client unified retry
 market-profile>=0.3.0           # Volume Profile (VPOC/VAH/VAL)
-pandas-ta>=0.3.14b              # ATR/SMA/BB/Pivot standard implementations
+pandas-ta>=0.4.71b0              # ATR/SMA/BB/Pivot standard implementations
 pandera>=0.20.0                 # DataFrame schema validation
 hmmlearn>=0.3.2                 # HMM regime detection (4-state)
 scikit-learn>=1.5.0             # Required by hmmlearn + DBSCAN S/R clustering
